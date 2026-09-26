@@ -1,0 +1,30 @@
+"""Default settings, keybindings and symbols."""
+
+from __future__ import annotations
+
+from daylight.models import AppConfig
+
+__all__ = [
+    "DEFAULT_CONFIG",
+    "DEFAULT_KEYBINDINGS",
+    "SYMBOLS",
+]
+
+#: Action -> key binding. Grows as pages are implemented.
+DEFAULT_KEYBINDINGS: dict[str, str] = {
+    "quit": "ctrl+q",
+    "help": "f1",
+    "up": "up",
+    "down": "down",
+}
+
+#: Kind -> display symbol.
+SYMBOLS: dict[str, str] = {
+    "dir": "\u25b8",
+    "file": " ",
+    "symlink": "\u2192",
+    "error": "\u2716",
+}
+
+#: ``AppConfig.start_path`` is None: callers resolve the working directory at startup.
+DEFAULT_CONFIG: AppConfig = AppConfig()

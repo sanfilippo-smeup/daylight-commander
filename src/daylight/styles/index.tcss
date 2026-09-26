@@ -1,0 +1,14 @@
+/* Daylight Commander — root stylesheet. Theme colors arrive as $name
+   variables from daylight.themes.get_css_variables(). */
+
+Screen {
+    background: $background;
+    color: $foreground;
+}
+
+#daylight-status {
+    background: $surface;
+    color: $accent;
+    height: 1;
+    padding: 0 1;
+}
