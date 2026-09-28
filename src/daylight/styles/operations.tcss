@@ -1,0 +1,77 @@
+/* File-operation modals: the shared frame, confirmations, forms, progress. */
+
+.modal-container {
+    align: center middle;
+    background: $background 60%;
+}
+
+.modal-frame {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    border: round $accent;
+    background: $surface;
+}
+
+.modal-header {
+    height: 1;
+    padding: 0 1;
+    color: $accent;
+    background: $surface;
+    text-style: bold;
+}
+
+.modal-body {
+    height: auto;
+    max-height: 20;
+    padding: 1 1;
+    background: $surface;
+}
+
+.modal-footer {
+    height: 3;
+    align-horizontal: right;
+    padding: 0 1;
+    background: $surface;
+}
+
+.modal-message {
+    width: 1fr;
+    color: $foreground;
+    text-style: bold;
+}
+
+.modal-detail {
+    width: 1fr;
+    color: $text-muted;
+}
+
+/* Declarative forms (ADR-007): one block per field. */
+.form-field {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-label {
+    height: 1;
+    color: $accent;
+}
+
+.form-help {
+    height: 1;
+    color: $text-muted;
+}
+
+/* Long copy/move/delete: the bar, the running item, then Cancel. */
+.op-bar {
+    width: 1fr;
+    height: 1;
+    margin-bottom: 1;
+}
+
+.op-status {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+}

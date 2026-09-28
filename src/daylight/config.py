@@ -22,6 +22,16 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "toggle_hidden": "ctrl+h",
     "cycle_sort": "s",
     "reverse_sort": "r",
+    "toggle_select": "space",
+    "select_all": "ctrl+a",
+    "clear_selection": "a",
+    "copy_to_other": "f5",
+    "move_to_other": "f6",
+    "new_directory": "f7",
+    "new_file": "f8",
+    "rename": "n",
+    "delete": "d",
+    "delete_permanent": "D",
 }
 
 #: Kind -> display symbol.

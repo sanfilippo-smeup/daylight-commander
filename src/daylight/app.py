@@ -20,7 +20,7 @@ class DaylightApp(App[None]):
     """Daylight Commander application."""
 
     TITLE = "Daylight Commander"
-    CSS_PATH = ["styles/index.tcss", "styles/files.tcss"]
+    CSS_PATH = ["styles/index.tcss", "styles/files.tcss", "styles/operations.tcss"]
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
     ]

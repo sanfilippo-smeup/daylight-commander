@@ -1,4 +1,4 @@
-"""Dual-pane Files page: listing, sorting, filtering and navigation.
+"""Dual-pane Files page: listing, sorting, filtering, navigation and operations.
 
 One :class:`FilePanel` per side. Exactly one panel is active at a time
 (:attr:`FilesPage.active_panel`); the active panel is the focused one and is the
@@ -10,6 +10,14 @@ in a worker thread, and the panel only ever hands the DataTable the rows that fi
 its viewport (:attr:`FilePanel.viewport_rows`); scrolling moves that window
 instead of growing the table. A 100k-entry directory therefore costs the event
 loop one viewport of work, not 100k rows.
+
+File operations (AC1-AC5) follow the same split: the panel only decides *what*
+to operate on -- the marked entries (:meth:`FilePanel.operation_targets`), or
+the row under the cursor when nothing is marked -- and every disk effect is a
+:class:`daylight.managers.FileManager` call. Destructive work is gated by a
+:class:`~daylight.modals.ConfirmScreen` (AC2) and long work runs inside a
+:class:`~daylight.modals.ProgressScreen`, whose worker thread keeps the event
+loop turning and offers Cancel (AC3).
 """
 
 from __future__ import annotations
@@ -26,8 +34,11 @@ from textual.reactive import var
 from textual.widgets import DataTable, Input, Static
 
 from daylight.components import file_table
+from daylight.forms import NEW_FILE_FORM, NEW_FOLDER_FORM, RENAME_FORM
 from daylight.managers import ConfigManager, FileManager
 from daylight.models import DirEntry
+from daylight.modals import ConfirmScreen, FormScreen, ProgressScreen
+from daylight.modals.progress import Operation
 
 __all__ = ["PANEL_NAMES", "SCROLL_STEP", "SCROLLBAR_RESERVE", "FilePanel", "FilesPage"]
 
@@ -75,6 +86,9 @@ class FilePanel(Vertical):
         self.sort_key = "name"
         self.sort_reverse = False
         self._listing = True
+        # Paths the user marked with ``space``; the batch operations act on
+        # these instead of the single row under the cursor (AC4).
+        self._selected: set[Path] = set()
         # Virtual scroll state: ``view_offset`` is the first row on screen and
         # ``window_start``/``window_stop`` the slice of ``visible_entries`` the
         # table actually holds. Everything between them is the viewport.
@@ -171,6 +185,20 @@ class FilePanel(Vertical):
             return self.visible_entries[index]
         return None
 
+    def cursor_entry(self) -> DirEntry | None:
+        """The entry under the table cursor -- the single-row operation target."""
+        return self.selected_entry()
+
+    @property
+    def manager(self) -> FileManager:
+        """The app-wide file manager, the only thing allowed to touch the disk."""
+        return self.app.file_manager  # type: ignore[attr-defined,no-any-return]
+
+    @property
+    def page(self) -> "FilesPage":
+        """The page this panel belongs to."""
+        return self.app.query_one(FilesPage)
+
     def name_at(self, index: int) -> str:
         """Return the display name of listing row ``index``, materialised or not."""
         if 0 <= index < len(self.visible_entries):
@@ -241,6 +269,12 @@ class FilePanel(Vertical):
     def apply_entries(self, visible: list[DirEntry]) -> None:
         """Install an ordered listing and show it from the top."""
         self.visible_entries = visible
+        # A re-filter or a re-sort must not keep marks pointing at rows the
+        # user can no longer see, or a batch op would act on a stale path.
+        # With nothing marked there is nothing to prune, and skipping the walk
+        # keeps a 100k listing off the event loop for no reason.
+        if self._selected:
+            self._selected.intersection_update(entry.path for entry in visible)
         self._listing = False
         # A new listing replaces the rows behind the same window bounds (a
         # re-sort, a new filter), so the rebuild cannot be skipped here.
@@ -311,6 +345,8 @@ class FilePanel(Vertical):
     def go_to(self, path: Path) -> None:
         """Navigate this panel to ``path`` and reload it."""
         self.directory = Path(path)
+        # Marks belong to the directory they were made in.
+        self._selected.clear()
         self.reload()
 
     def ascend(self) -> None:
@@ -325,6 +361,218 @@ class FilePanel(Vertical):
         entry = self.selected_entry()
         if entry is not None and entry.is_dir:
             self.go_to(entry.path)
+
+    # -- multi-selection (AC4) ----------------------------------------------
+
+    @property
+    def selected_count(self) -> int:
+        """How many entries are marked in this panel."""
+        return len(self._selected)
+
+    def is_selected(self, entry: DirEntry) -> bool:
+        """True when ``entry`` is marked."""
+        return entry.path in self._selected
+
+    def selected_entries(self) -> list[DirEntry]:
+        """The marked entries, in listing order."""
+        return [entry for entry in self.visible_entries if entry.path in self._selected]
+
+    def toggle_selection(self, index: int | None = None) -> DirEntry | None:
+        """Mark or unmark one row; return the row that was touched.
+
+        ``index`` defaults to the row under the cursor. The synthetic ``..`` row
+        is never markable: it navigates rather than being a thing to copy.
+        """
+        if index is None:
+            entry = self.cursor_entry()
+        elif 0 <= index < len(self.visible_entries):
+            entry = self.visible_entries[index]
+        else:
+            return None
+        if entry is None or entry.is_parent:
+            return None
+        if entry.path in self._selected:
+            self._selected.discard(entry.path)
+        else:
+            self._selected.add(entry.path)
+        self.update_breadcrumb()
+        return entry
+
+    def select_all(self) -> int:
+        """Mark every visible entry; return how many are marked now."""
+        self._selected = {entry.path for entry in self.visible_entries if not entry.is_parent}
+        self.update_breadcrumb()
+        return self.selected_count
+
+    def clear_selection(self) -> None:
+        """Unmark everything in this panel."""
+        self._selected.clear()
+        self.update_breadcrumb()
+
+    def invert_selection(self) -> int:
+        """Swap marked and unmarked; return how many are marked now."""
+        self._selected = {
+            entry.path for entry in self.visible_entries if not entry.is_parent
+        } - self._selected
+        self.update_breadcrumb()
+        return self.selected_count
+
+    def operation_targets(self) -> list[DirEntry]:
+        """The entries an operation applies to: the marked ones, else the cursor.
+
+        This is the single decision that makes a command a batch: mark two rows
+        with ``space`` and both are copied, marked nothing and the one row under
+        the cursor is.
+        """
+        marked = self.selected_entries()
+        if marked:
+            return marked
+        entry = self.cursor_entry()
+        if entry is None or entry.is_parent:
+            return []
+        return [entry]
+
+    # -- file operations (AC1, AC2, AC3) -----------------------------------
+
+    def copy_to(self, destination: Path) -> list[Path]:
+        """Copy the targets into ``directory`` behind a progress modal."""
+        sources = [entry.path for entry in self.operation_targets()]
+        if not sources:
+            return []
+        manager = self.manager
+        self._run_operation(
+            f"Copying {self._count(sources)} item(s)",
+            lambda progress, cancelled: manager.copy_into(
+                sources, destination, progress=progress, cancelled=cancelled
+            ),
+            total=len(sources),
+        )
+        return sources
+
+    def move_to(self, destination: Path) -> list[Path]:
+        """Move the targets into ``directory`` behind a progress modal."""
+        sources = [entry.path for entry in self.operation_targets()]
+        if not sources:
+            return []
+        manager = self.manager
+        self._run_operation(
+            f"Moving {self._count(sources)} item(s)",
+            lambda progress, cancelled: manager.move_into(
+                sources, destination, progress=progress, cancelled=cancelled
+            ),
+            total=len(sources),
+        )
+        return sources
+
+    def prompt_create(self, *, is_dir: bool) -> None:
+        """Ask for a name and create a new file or directory in this panel."""
+        form = NEW_FOLDER_FORM if is_dir else NEW_FILE_FORM
+        title = "New folder" if is_dir else "New file"
+        self.app.push_screen(
+            FormScreen(form, title=title),
+            lambda values: self._create_done(values, is_dir=is_dir),
+        )
+
+    def _create_done(self, values: dict[str, str] | None, *, is_dir: bool) -> None:
+        """Create the entry the new-item form asked for."""
+        if not values:
+            return
+        try:
+            self.manager.create(self.directory, values.get("name", ""), is_dir=is_dir)
+        except (OSError, ValueError) as error:
+            self.notify(str(error), severity="error")
+            return
+        self.page.reload_panels()
+
+    def prompt_rename(self) -> None:
+        """Ask for a new name and rename the entry under the cursor."""
+        entry = self.cursor_entry()
+        if entry is None or entry.is_parent:
+            return
+        form = RENAME_FORM.with_defaults(name=entry.name)
+        self.app.push_screen(FormScreen(form, title="Rename"), self._rename_done)
+
+    def _rename_done(self, values: dict[str, str] | None) -> None:
+        """Apply the rename the form asked for."""
+        if not values:
+            return
+        entry = self.cursor_entry()
+        if entry is None:
+            return
+        try:
+            self.manager.rename(entry.path, values.get("name", ""))
+        except (OSError, ValueError) as error:
+            self.notify(str(error), severity="error")
+            return
+        self.page.reload_panels()
+
+    def prompt_delete(self, *, permanent: bool = False) -> None:
+        """Confirm, then delete the targets; trash unless ``permanent`` is set.
+
+        The confirmation comes first and the operation is only wired up in the
+        answer callback, so a declined dialog cannot have deleted anything
+        (AC2, AC5).
+        """
+        targets = self.operation_targets()
+        if not targets:
+            return
+        paths = [entry.path for entry in targets]
+        permanent_label = "Permanently delete" if permanent else "Delete"
+        self.app.push_screen(
+            ConfirmScreen(
+                self.delete_prompt(targets, permanent=permanent),
+                title=permanent_label,
+                detail=self.delete_detail(targets),
+                yes_label="Delete permanently" if permanent else "Move to trash",
+            ),
+            lambda confirmed: self._delete_done(confirmed, paths, permanent=permanent),
+        )
+
+    def _delete_done(self, confirmed: bool | None, paths: list[Path], *, permanent: bool) -> None:
+        """Run the delete only when the confirmation screen said yes."""
+        if not confirmed:
+            return
+        manager = self.manager
+        self._run_operation(
+            f"{'Wiping' if permanent else 'Deleting'} {len(paths)} item(s)",
+            lambda progress, cancelled: manager.delete_many(
+                paths, permanent=permanent, progress=progress, cancelled=cancelled
+            ),
+            total=len(paths),
+        )
+
+    def _run_operation(self, title: str, operation: Operation, *, total: int) -> None:
+        """Push the progress modal for a long operation and refresh afterwards."""
+        self.app.push_screen(ProgressScreen(title, operation, total=total), self._operation_done)
+
+    def _operation_done(self, _result: None) -> None:
+        """Re-read both panes once the progress modal is gone."""
+        self.page.reload_panels()
+
+    @staticmethod
+    def _count(paths: list[Path]) -> int:
+        """How many paths an operation is about; kept for readable titles."""
+        return len(paths)
+
+    def delete_prompt(self, targets: list[DirEntry], *, permanent: bool) -> str:
+        """The question the confirmation modal asks before a delete."""
+        if permanent:
+            verb = "Permanently delete"
+            tail = "This cannot be undone and does not use the trash."
+        else:
+            verb = "Delete"
+            tail = "The items go to the OS trash; without one they are removed for good."
+        if len(targets) == 1:
+            return f"{verb} {targets[0].name}?  {tail}"
+        return f"{verb} {len(targets)} items?  {tail}"
+
+    def delete_detail(self, targets: list[DirEntry]) -> str:
+        """The names a confirmation modal lists, so nothing is deleted unseen."""
+        names = [entry.name for entry in targets]
+        shown = ", ".join(names[:5])
+        if len(names) > 5:
+            shown += f", \u2026 and {len(names) - 5} more"
+        return shown
 
     # -- scroll actions ----------------------------------------------------
 
@@ -367,13 +615,8 @@ class FilePanel(Vertical):
     # -- breadcrumb --------------------------------------------------------
 
     def update_breadcrumb(self) -> None:
-        """Refresh the breadcrumb with the path, row count and loading state."""
+        """Refresh the breadcrumb with the path, row count and selection."""
         self.breadcrumb.update(self.breadcrumb_text())
-
-    def breadcrumb_text(self) -> str:
-        """Breadcrumb path plus a row count / loading marker."""
-        path = file_table.format_breadcrumb(self.directory)
-        return f" {path}  \u2502  {self.listing_marker()}"
 
     def listing_marker(self) -> str:
         """Short status shown after the path: loading, whole listing or window."""
@@ -383,6 +626,24 @@ class FilePanel(Vertical):
             return f"{self.total_count} items"
         first = self.window_start + 1
         return f"{first}-{self.window_stop} of {self.total_count} items"
+
+    def selection_marker(self) -> str:
+        """How many rows are marked, or an empty string when none are."""
+        if not self.selected_count:
+            return ""
+        noun = "item" if self.selected_count == 1 else "items"
+        return f"\u2022 {self.selected_count} {noun} selected"
+
+    def breadcrumb_text(self) -> str:
+        """Breadcrumb path plus a row count / loading marker.
+
+        The selection count only appears once something is marked, so an
+        unmarked pane reads exactly as it did before multi-select existed.
+        """
+        path = file_table.format_breadcrumb(self.directory)
+        marked = self.selection_marker()
+        text = f" {path}  \u2502  {self.listing_marker()}  "
+        return f"{text}{marked}" if marked else text.rstrip()
 
     @on(DataTable.RowSelected, "DataTable")
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -407,6 +668,19 @@ class FilesPage(Vertical):
         Binding("ctrl+h", "toggle_hidden", "Hidden", show=True),
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("r", "reverse_sort", "Reverse", show=True),
+        # The operation keys are deliberately hidden from the footer: the bar
+        # already runs out of room at 120 columns, and the navigation keys that
+        # were there first are the ones a new user needs to see.
+        Binding("space", "toggle_select", "Select", show=False),
+        Binding("ctrl+a", "select_all", "Select all", show=False),
+        Binding("a", "clear_selection", "Select none", show=False),
+        Binding("f5", "copy_to_other", "Copy", show=False),
+        Binding("f6", "move_to_other", "Move", show=False),
+        Binding("f7", "new_directory", "New dir", show=False),
+        Binding("f8", "new_file", "New file", show=False),
+        Binding("n", "rename", "Rename", show=False),
+        Binding("d", "delete", "Delete", show=False),
+        Binding("D", "delete_permanent", "Wipe", show=False),
     ]
 
     active_panel: var[str] = var(PANEL_NAMES[0], init=False)
@@ -544,6 +818,65 @@ class FilesPage(Vertical):
         """``ctrl+h``: toggle hidden entries and persist the preference."""
         self.file_manager.show_hidden = not self.file_manager.show_hidden
         self.config_manager.update(show_hidden=self.file_manager.show_hidden)
+        for panel in self.panels:
+            panel.reload()
+
+    # -- multi-selection (AC4) ----------------------------------------------
+
+    def action_toggle_select(self) -> None:
+        """``space``: mark or unmark the active panel's cursor row."""
+        if not self._filter_has_focus():
+            self.active.toggle_selection()
+
+    def action_select_all(self) -> None:
+        """``ctrl+a``: mark every row the active panel shows."""
+        if not self._filter_has_focus():
+            self.active.select_all()
+
+    def action_clear_selection(self) -> None:
+        """``a``: unmark everything in the active panel."""
+        if not self._filter_has_focus():
+            self.active.clear_selection()
+
+    # -- file operations (AC1, AC2, AC3) -----------------------------------
+
+    def action_copy_to_other(self) -> None:
+        """``f5``: copy the active panel's targets into the other pane."""
+        if not self._filter_has_focus():
+            self.active.copy_to(self.inactive.directory)
+
+    def action_move_to_other(self) -> None:
+        """``f6``: move the active panel's targets into the other pane."""
+        if not self._filter_has_focus():
+            self.active.move_to(self.inactive.directory)
+
+    def action_new_directory(self) -> None:
+        """``f7``: create a directory in the active panel."""
+        if not self._filter_has_focus():
+            self.active.prompt_create(is_dir=True)
+
+    def action_new_file(self) -> None:
+        """``f8``: create a file in the active panel."""
+        if not self._filter_has_focus():
+            self.active.prompt_create(is_dir=False)
+
+    def action_rename(self) -> None:
+        """``n``: rename the entry under the active panel's cursor."""
+        if not self._filter_has_focus():
+            self.active.prompt_rename()
+
+    def action_delete(self) -> None:
+        """``d``: confirm, then move the targets to the OS trash."""
+        if not self._filter_has_focus():
+            self.active.prompt_delete(permanent=False)
+
+    def action_delete_permanent(self) -> None:
+        """``D``: confirm, then delete the targets for good, bypassing the trash."""
+        if not self._filter_has_focus():
+            self.active.prompt_delete(permanent=True)
+
+    def reload_panels(self) -> None:
+        """Re-read every panel, after something changed the directories."""
         for panel in self.panels:
             panel.reload()
 
