@@ -16,6 +16,12 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "help": "f1",
     "up": "up",
     "down": "down",
+    "switch_panel": "ctrl+t",
+    "go_up": "backspace",
+    "start_filter": "slash",
+    "toggle_hidden": "ctrl+h",
+    "cycle_sort": "s",
+    "reverse_sort": "r",
 }
 
 #: Kind -> display symbol.

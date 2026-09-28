@@ -1,0 +1,52 @@
+/* Files page: filter bar, dual-pane layout, panels and viewer mount point. */
+
+#files-page {
+    height: 1fr;
+}
+
+#files-filter {
+    display: none;
+    height: 3;
+    border: round $accent;
+}
+
+.files-panes {
+    height: 1fr;
+}
+
+.file-panel {
+    width: 1fr;
+    height: 1fr;
+    border: round $secondary;
+    background: $panel;
+}
+
+/* Exactly one panel is active; the active one shows the accent border. */
+.file-panel.active {
+    border: round $accent;
+}
+
+.file-panel.inactive {
+    opacity: 0.75;
+}
+
+.breadcrumb {
+    height: 1;
+    padding: 0 1;
+    color: $accent;
+    background: $surface;
+    text-style: bold;
+}
+
+DataTable {
+    height: 1fr;
+    background: $panel;
+}
+
+/* Stable mount point for the internal viewer (ADR-010). */
+.panel-mount {
+    display: none;
+    height: auto;
+    max-height: 50%;
+    border: round $secondary;
+}

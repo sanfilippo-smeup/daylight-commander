@@ -2,27 +2,43 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Footer, Header
 
 from daylight import themes
-from daylight.config import DEFAULT_CONFIG
+from daylight.components.modules.file_list import FilesPage
+from daylight.managers import ConfigManager, FileManager
 from daylight.models import AppConfig
 
 __all__ = ["DaylightApp"]
 
 
 class DaylightApp(App[None]):
-    """Daylight Commander application (minimal shell for DC-001)."""
+    """Daylight Commander application."""
 
     TITLE = "Daylight Commander"
-    CSS_PATH = "styles/index.tcss"
+    CSS_PATH = ["styles/index.tcss", "styles/files.tcss"]
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
     ]
+    PAGES = {"files": FilesPage}
 
-    def __init__(self, config: AppConfig | None = None) -> None:
-        self.app_config: AppConfig = config or DEFAULT_CONFIG
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        config_path: str | os.PathLike[str] | None = None,
+    ) -> None:
+        # A config passed in wins; otherwise the persisted one is loaded, so a
+        # preference saved by a previous run (the hidden-files toggle, the theme)
+        # is restored on restart. A missing or broken file falls back to the
+        # defaults inside ``ConfigManager.load``.
+        self.config_manager = ConfigManager(config_path)
+        self.app_config: AppConfig = config or self.config_manager.load()
+        self.file_manager = FileManager(show_hidden=self.app_config.show_hidden)
+        self.start_path: Path = self.app_config.start_path or Path.cwd()
         super().__init__()
 
     def on_mount(self) -> None:
@@ -32,7 +48,11 @@ class DaylightApp(App[None]):
         self.theme = theme.name
 
     def compose(self) -> ComposeResult:
-        """Compose the shell: header, status line, footer."""
+        """Compose the shell: header, the Files page and the footer."""
         yield Header()
-        yield Static("Daylight Commander", id="daylight-status")
+        yield FilesPage(
+            self.start_path,
+            file_manager=self.file_manager,
+            config_manager=self.config_manager,
+        )
         yield Footer()
