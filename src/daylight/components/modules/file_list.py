@@ -18,6 +18,13 @@ the row under the cursor when nothing is marked -- and every disk effect is a
 :class:`~daylight.modals.ConfirmScreen` (AC2) and long work runs inside a
 :class:`~daylight.modals.ProgressScreen`, whose worker thread keeps the event
 loop turning and offers Cancel (AC3).
+
+Viewing and editing (DC-004, AC1-AC6) keep that split as well, and add the rule
+that decides where a viewer goes: :meth:`FilesPage.open_view` mounts it into the
+*inactive* panel and nowhere else, so the listing being browsed is never covered
+and nothing is ever pushed fullscreen. A binary file is never rendered inline:
+it goes straight to the OS default application, and ``e`` hands text to
+``$EDITOR`` and everything else to the OS.
 """
 
 from __future__ import annotations
@@ -25,17 +32,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual import on, work
-from textual.app import ComposeResult
+from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.events import MouseScrollDown, MouseScrollUp, Resize
 from textual.reactive import var
+from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
 
 from daylight.components import file_table
+from daylight.components.modules.properties_view import PropertiesView
+from daylight.components.modules.viewer import ViewerPanel
 from daylight.forms import NEW_FILE_FORM, NEW_FOLDER_FORM, RENAME_FORM
 from daylight.managers import ConfigManager, FileManager
+from daylight.managers.external import EditDispatch
 from daylight.models import DirEntry
 from daylight.modals import ConfirmScreen, FormScreen, ProgressScreen
 from daylight.modals.progress import Operation
@@ -58,6 +69,16 @@ SCROLL_STEP = 3
 #: with the panel (measured on a 100k-entry directory of long names). Reserving
 #: the row keeps the fit independent of that, at the cost of one blank line.
 SCROLLBAR_RESERVE = 1
+
+#: The panel actions the properties table's own cursor keys must win instead.
+#:
+#: These are the actions behind the six ``priority`` cursor bindings, which the
+#: framework resolves from the app downwards, ahead of the focused widget's own
+#: bindings. The properties table binds the same six keys for its own cursor, so
+#: while it is the focused widget these are reported as disabled.
+CURSOR_ACTIONS: frozenset[str] = frozenset(
+    {"cursor_up", "cursor_down", "page_up", "page_down", "scroll_home", "scroll_end"}
+)
 
 
 class FilePanel(Vertical):
@@ -119,6 +140,28 @@ class FilePanel(Vertical):
     def mount_point(self) -> Container:
         """Stable mount point the internal viewer will mount into (ADR-010)."""
         return self._mount_point
+
+    @property
+    def mounted_viewer(self) -> Widget | None:
+        """The widget currently mounted in this panel's mount point, if any."""
+        children = self._mount_point.children
+        return children[0] if children else None
+
+    def mount_viewer(self, widget: Widget) -> None:
+        """Show ``widget`` in this panel's mount point, replacing what was there.
+
+        The mount point is a widget inside the panel, never a screen, which is how
+        the viewer stays in the pane (AC1) instead of covering the terminal.
+        """
+        self.clear_viewer()
+        self._mount_point.mount(widget)
+        self._mount_point.add_class("visible")
+
+    def clear_viewer(self) -> None:
+        """Empty the mount point and hide it again."""
+        if self._mount_point.children:
+            self._mount_point.remove_children()
+        self._mount_point.remove_class("visible")
 
     @property
     def row_count(self) -> int:
@@ -217,6 +260,28 @@ class FilePanel(Vertical):
         """Give the keyboard to this panel's table; a no-op before it is mounted."""
         if self.is_mounted:
             self.table.focus()
+
+    def properties_table_focused(self) -> bool:
+        """True while the properties table owns the keyboard, in either panel (AC6)."""
+        focused = self.app.focused
+        return isinstance(focused, DataTable) and isinstance(focused.parent, PropertiesView)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
+        """Hand the cursor keys back to the focused properties table (AC6).
+
+        The six cursor bindings above are ``priority``, and the framework resolves
+        those from the app down *before* the focused widget's own bindings -- in
+        either panel, since a binding is not scoped to the pane it sits in. That
+        is what keeps the virtual listing cursor ahead of the panel's DataTable,
+        but it would also swallow ``up``/``down``/``pageup``/``pagedown``/``home``/
+        ``end`` while the *properties* table is the focused widget, leaving only
+        its first field reachable by keyboard. Reporting these actions as disabled
+        lets the key fall through to the table, which binds the same six keys.
+        """
+        del parameters
+        if action in CURSOR_ACTIONS and self.properties_table_focused():
+            return False
+        return True
 
     def on_mount(self) -> None:
         """Declare the columns once, then kick off the first listing."""
@@ -647,14 +712,20 @@ class FilePanel(Vertical):
 
     @on(DataTable.RowSelected, "DataTable")
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        """``enter`` on a directory row navigates into it.
+        """``enter`` on a row: a directory (or ``..``) is entered, a file is viewed.
 
         The selector is the widget type, not ``#table-*``: an id selector in
         Textual is an exact match, and the handler already only ever sees the
         rows of its own panel.
         """
         event.stop()
-        self.enter_selected()
+        entry = self.cursor_entry()
+        if entry is None:
+            return
+        if entry.is_dir:
+            self.enter_selected()
+        else:
+            self.page.open_view()
 
 
 class FilesPage(Vertical):
@@ -681,6 +752,19 @@ class FilesPage(Vertical):
         Binding("n", "rename", "Rename", show=False),
         Binding("d", "delete", "Delete", show=False),
         Binding("D", "delete_permanent", "Wipe", show=False),
+        # Viewing keys. Hidden from the footer for the same reason as the
+        # operation keys above; the viewer header repeats them while one is open.
+        Binding("v", "view", "View", show=False),
+        Binding("i", "properties", "Info", show=False),
+        Binding("e", "edit", "Edit", show=False),
+        Binding("c", "copy_property", "Copy field", show=False),
+        Binding("N", "next_match", "Next match", show=False),
+        Binding("ctrl+f", "search_viewer", "Find", show=False),
+        Binding("ctrl+up", "viewer_up", "Viewer up", show=False),
+        Binding("ctrl+down", "viewer_down", "Viewer down", show=False),
+        Binding("ctrl+pageup", "viewer_page_up", "Viewer page up", show=False),
+        Binding("ctrl+pagedown", "viewer_page_down", "Viewer page down", show=False),
+        Binding("escape", "close_viewer", "Close viewer", show=False),
     ]
 
     active_panel: var[str] = var(PANEL_NAMES[0], init=False)
@@ -695,6 +779,8 @@ class FilesPage(Vertical):
         self.file_manager = file_manager or FileManager()
         self.config_manager = config_manager or ConfigManager()
         self._panels: dict[str, FilePanel] = {}
+        #: The path the mounted viewer/properties view is showing, if any.
+        self._view_target: Path | None = None
         super().__init__(id="files-page")
 
     # -- queries -----------------------------------------------------------
@@ -879,6 +965,232 @@ class FilesPage(Vertical):
         """Re-read every panel, after something changed the directories."""
         for panel in self.panels:
             panel.reload()
+
+    # -- viewing and editing (AC1-AC6) -------------------------------------
+
+    @property
+    def manager(self) -> FileManager:
+        """The app-wide manager: the only thing allowed to touch the disk."""
+        return self.app.file_manager  # type: ignore[attr-defined,no-any-return]
+
+    @property
+    def mounted_widget(self) -> Widget | None:
+        """The widget a panel is currently showing in its mount point, if any."""
+        for panel in self.panels:
+            widget = panel.mounted_viewer
+            if widget is not None:
+                return widget
+        return None
+
+    @property
+    def viewer(self) -> ViewerPanel | None:
+        """The internal content viewer, when one is mounted."""
+        widget = self.mounted_widget
+        return widget if isinstance(widget, ViewerPanel) else None
+
+    @property
+    def properties_view(self) -> PropertiesView | None:
+        """The properties view, when one is mounted."""
+        widget = self.mounted_widget
+        return widget if isinstance(widget, PropertiesView) else None
+
+    @property
+    def view_target(self) -> Path | None:
+        """The path the mounted viewer/properties view is showing."""
+        return self._view_target
+
+    @property
+    def viewer_pane(self) -> str | None:
+        """Which pane holds the viewer: always the inactive one (AC1)."""
+        for panel in self.panels:
+            if panel.mounted_viewer is not None:
+                return panel.panel_name
+        return None
+
+    def target_entry(self) -> DirEntry | None:
+        """The entry the viewer and the editor act on, or None when there is none."""
+        entry = self.active.cursor_entry()
+        if entry is None or entry.is_parent:
+            return None
+        return entry
+
+    def open_view(self) -> Path | None:
+        """Show the entry under the cursor in the internal viewer (AC1-AC3).
+
+        The viewer always goes into the *inactive* pane and is never pushed as a
+        screen, so the listing being browsed is never covered. A binary file is
+        never rendered inline: it is handed to the OS default application (AC4).
+        """
+        entry = self.target_entry()
+        if entry is None:
+            return None
+        if entry.is_dir:
+            self.notify("browse a directory, or put the cursor on a file", severity="warning")
+            return None
+        kind = self.manager.view_kind(entry.path)
+        if kind == "binary":
+            self.manager.open_external(entry.path)
+            self.notify(f"{entry.name} is binary: opened in the system viewer")
+            return None
+        self.clear_viewers()
+        self._view_target = entry.path
+        self.inactive.mount_viewer(ViewerPanel(entry.path, manager=self.manager, kind=kind))
+        return entry.path
+
+    def open_properties(self) -> Path | None:
+        """Show the detail/properties view for the entry under the cursor (AC6)."""
+        entry = self.target_entry()
+        if entry is None:
+            return None
+        self.clear_viewers()
+        self._view_target = entry.path
+        self.inactive.mount_viewer(PropertiesView(entry.path, manager=self.manager))
+        return entry.path
+
+    def clear_viewers(self) -> None:
+        """Empty every mount point and forget the view target."""
+        for panel in self.panels:
+            panel.clear_viewer()
+        self._view_target = None
+
+    def edit_target(self) -> None:
+        """Edit the entry under the cursor by type (AC5, FR-304).
+
+        Text-based files go to ``$EDITOR`` (vim by default) and everything else to
+        the OS default application. The editor owns the terminal while it runs, so
+        the app is suspended around the call and the view is reloaded after it --
+        otherwise the viewer would still show the file as it was before the edit.
+        """
+        entry = self.target_entry()
+        if entry is None:
+            return
+        if entry.is_dir:
+            self.notify("a directory has nothing to edit", severity="warning")
+            return
+        widget = self._widget_for(entry.path)
+        dispatch = self._run_suspended(entry.path)
+        program = dispatch.command[0] if dispatch.command else "?"
+        self.notify(f"{entry.name} \u2192 {program}")
+        if isinstance(widget, ViewerPanel):
+            widget.load()
+        elif isinstance(widget, PropertiesView):
+            widget.read_properties()
+
+    def _run_suspended(self, path: Path) -> EditDispatch:
+        """Hand ``path`` to its editor with the terminal released to the editor.
+
+        A terminal that cannot be suspended (Textual Web, some multiplexers)
+        still gets the editor: the app keeps drawing behind it, which beats
+        refusing to edit at all.
+        """
+        try:
+            with self.app.suspend():
+                return self.manager.edit(path)
+        except SuspendNotSupported:
+            return self.manager.edit(path)
+
+    def _widget_for(self, path: Path) -> Widget | None:
+        """Return the mounted widget showing ``path``, if there is one."""
+        for panel in self.panels:
+            widget = panel.mounted_viewer
+            if widget is not None and getattr(widget, "path", None) == path:
+                return widget
+        return None
+
+    # -- viewer actions ----------------------------------------------------
+
+    def _scroll_viewer(self, lines: int, pages: int = 0) -> None:
+        """Move the viewer by ``lines`` lines or ``pages`` screenfuls.
+
+        A rendered Markdown body scrolls itself; every other kind scrolls the
+        viewer's own window, so a file of any size moves without being read.
+        """
+        viewer = self.viewer
+        if viewer is None:
+            return
+        if pages:
+            lines = pages * viewer.window_rows
+        if not viewer.is_rendered:
+            viewer.scroll_lines(lines)
+            return
+        body = viewer.body
+        for _ in range(abs(lines)):
+            if lines > 0:
+                body.scroll_down(animate=False)
+            else:
+                body.scroll_up(animate=False)
+
+    def action_view(self) -> None:
+        """``v``: open the internal viewer in the inactive panel."""
+        if not self._filter_has_focus():
+            self.open_view()
+
+    def action_properties(self) -> None:
+        """``i``: open the properties view in the inactive panel."""
+        if not self._filter_has_focus():
+            self.open_properties()
+
+    def action_edit(self) -> None:
+        """``e``: edit the cursor entry by type (``$EDITOR`` or the OS app)."""
+        if not self._filter_has_focus():
+            self.edit_target()
+
+    def action_close_viewer(self) -> None:
+        """``escape``: drop the find box, else empty the mount points.
+
+        The find box is the innermost layer, so the first escape throws it away
+        and the second one leaves the file. A stray escape never loses the file
+        you were reading.
+        """
+        if self._filter_has_focus():
+            return
+        viewer = self.viewer
+        if isinstance(viewer, ViewerPanel) and viewer.search_open:
+            viewer.close_search()
+            return
+        self.clear_viewers()
+
+    def action_search_viewer(self) -> None:
+        """``ctrl+f``: search inside the mounted viewer."""
+        if not self._filter_has_focus():
+            viewer = self.viewer
+            if viewer is not None:
+                viewer.open_search()
+
+    def action_next_match(self) -> None:
+        """``N``: jump to the next search match in the viewer."""
+        if not self._filter_has_focus():
+            viewer = self.viewer
+            if viewer is not None:
+                viewer.next_hit()
+
+    def action_copy_property(self) -> None:
+        """``c``: copy the value under the cursor in the properties view."""
+        if self._filter_has_focus():
+            return
+        view = self.properties_view
+        if view is not None:
+            view.copy_selected()
+
+    def action_viewer_up(self) -> None:
+        """``ctrl+up``: one line up in the viewer."""
+        if not self._filter_has_focus():
+            self._scroll_viewer(-1)
+
+    def action_viewer_down(self) -> None:
+        """``ctrl+down``: one line down in the viewer."""
+        if not self._filter_has_focus():
+            self._scroll_viewer(1)
+
+    def action_viewer_page_up(self) -> None:
+        """``ctrl+pageup``: one screenful up in the viewer."""
+        if not self._filter_has_focus():
+            self._scroll_viewer(0, -1)
+
+    def action_viewer_page_down(self) -> None:
+        """``ctrl+pagedown``: one screenful down in the viewer."""
+        if not self._filter_has_focus():
+            self._scroll_viewer(0, 1)
 
     # -- filtering ---------------------------------------------------------
 

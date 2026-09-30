@@ -1,0 +1,77 @@
+/* Internal viewer and properties view (DC-004), mounted in the .panel-mount
+   of the inactive panel. Never a screen: the mount point is a widget, so the
+   listing keeps its half of the terminal (ADR-010). */
+
+.panel-mount.visible {
+    display: block;
+    height: 1fr;
+    max-height: 50%;
+    border: round $accent;
+    background: $panel;
+}
+
+.viewer {
+    height: 1fr;
+    background: $panel;
+}
+
+.viewer-header,
+.properties-header {
+    height: 1;
+    padding: 0 1;
+    color: $accent;
+    background: $surface;
+    text-style: bold;
+}
+
+.viewer-notice {
+    height: 1;
+    padding: 0 1;
+    color: $warning;
+    background: $surface;
+}
+
+.viewer-notice:empty {
+    display: none;
+}
+
+.viewer-body {
+    height: 1fr;
+    background: $panel;
+    scrollbar-size-vertical: 1;
+}
+
+.viewer-text {
+    width: 1fr;
+    height: auto;
+    padding: 0 1;
+    background: $panel;
+}
+
+.viewer-markdown {
+    padding: 0 1;
+    background: $panel;
+}
+
+.viewer-search {
+    height: 3;
+    border: round $secondary;
+}
+
+.viewer-status,
+.properties-status {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+    background: $surface;
+}
+
+.properties {
+    height: 1fr;
+    background: $panel;
+}
+
+.properties DataTable {
+    height: 1fr;
+    background: $panel;
+}

@@ -32,6 +32,13 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "rename": "n",
     "delete": "d",
     "delete_permanent": "D",
+    "view": "v",
+    "properties": "i",
+    "edit": "e",
+    "copy_property": "c",
+    "next_match": "N",
+    "search_viewer": "ctrl+f",
+    "close_viewer": "escape",
 }
 
 #: Kind -> display symbol.

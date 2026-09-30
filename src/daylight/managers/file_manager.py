@@ -5,19 +5,21 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import stat as stat_module
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from daylight.models import DirEntry, FileEntry
+from daylight.managers import content, external
+from daylight.models import DirEntry, FileEntry, FileProperties, ViewDocument
 
 __all__ = [
     "SORT_KEYS",
     "FileManager",
     "OperationCancelled",
+    "content",
+    "external",
 ]
 
 #: Logged when a delete cannot reach the OS trash and falls back to ``rm``.
@@ -30,28 +32,10 @@ logger = logging.getLogger("daylight.managers.file_manager")
 #: Sort keys offered by the Files page, in toggle order.
 SORT_KEYS: tuple[str, ...] = ("name", "size", "time", "type")
 
-_PERMISSION_CHARS = ("r", "w", "x")
-
-#: The user/group/other read-write-execute bit triples, in display order.
-_PERMISSION_TRIOS = (
-    (stat_module.S_IRUSR, stat_module.S_IWUSR, stat_module.S_IXUSR),
-    (stat_module.S_IRGRP, stat_module.S_IWGRP, stat_module.S_IXGRP),
-    (stat_module.S_IROTH, stat_module.S_IWOTH, stat_module.S_IXOTH),
-)
-
 
 def _is_hidden(path: Path) -> bool:
     """Return True when ``path.name`` is a dotfile."""
     return path.name.startswith(".")
-
-
-def _permission_string(mode: int) -> str:
-    """Return the ``rwxr-xr-x`` style permission string for a ``st_mode``."""
-    return "".join(
-        char if mode & bit else "-"
-        for trio in _PERMISSION_TRIOS
-        for bit, char in zip(trio, _PERMISSION_CHARS, strict=True)
-    )
 
 
 def _kind_of(name: str, is_dir: bool, is_symlink: bool) -> str:
@@ -218,7 +202,75 @@ class FileManager:
 
     def permissions(self, path: str | os.PathLike[str]) -> str:
         """Return the ``rwxr-xr-x`` style permissions of ``path``."""
-        return _permission_string(Path(path).lstat().st_mode)
+        return content.permission_string(Path(path).lstat().st_mode)
+
+    # -- viewing and editing (DC-004) ---------------------------------------
+
+    def view_kind(self, path: str | os.PathLike[str]) -> str:
+        """Return how ``path`` should be viewed: md/json/text/binary/directory."""
+        return content.view_kind(path)
+
+    def load_view(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        limit: int = content.PRETTY_LIMIT,
+    ) -> ViewDocument:
+        """Return the :class:`~daylight.models.ViewDocument` for ``path``.
+
+        Thin delegate to :func:`daylight.managers.content.load_view` so the UI
+        keeps talking to one manager for every disk read.
+        """
+        return content.load_view(path, limit=limit)
+
+    def read_window(self, path: str | os.PathLike[str], start: int, count: int) -> list[str]:
+        """Return a window of lines of ``path``, read lazily (never the whole file)."""
+        return content.read_window(path, start, count)
+
+    def count_lines(self, path: str | os.PathLike[str]) -> int | None:
+        """Return how many lines ``path`` has, or None when it is too big to scan."""
+        return content.count_lines(path)
+
+    def find_matches(
+        self,
+        path: str | os.PathLike[str],
+        needle: str,
+        *,
+        max_hits: int = 200,
+    ) -> list[int]:
+        """Return the 1-based line numbers of ``path`` containing ``needle``."""
+        return content.find_matches(path, needle, max_hits=max_hits)
+
+    def describe(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        algorithm: str = content.CHECKSUM_ALGORITHM,
+        with_checksum: bool = True,
+    ) -> FileProperties:
+        """Return the properties the detail view lists (stat, owner, MIME, checksum)."""
+        return content.describe(path, algorithm=algorithm, with_checksum=with_checksum)
+
+    def open_external(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        runner: external.Runner | None = None,
+    ) -> int:
+        """Open ``path`` in the OS default application (binary files, AC4)."""
+        return external.open_external(path, runner=runner)
+
+    def edit(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        editor: str | None = None,
+        runner: external.Runner | None = None,
+    ) -> external.EditDispatch:
+        """Edit ``path`` by type: text -> ``$EDITOR``, else the OS default app (AC5)."""
+        dispatch = external.edit_dispatch(path, editor=editor)
+        external.run(dispatch.command, runner)
+        return dispatch
 
     def parent_of(self, path: str | os.PathLike[str]) -> Path:
         """Return the parent directory of ``path`` (path maths only, no disk read)."""
@@ -617,7 +669,7 @@ class FileManager:
             is_symlink=is_symlink,
             size=info.st_size,
             modified=info.st_mtime,
-            permissions=_permission_string(info.st_mode),
+            permissions=content.permission_string(info.st_mode),
             kind=_kind_of(child.name, is_dir, is_symlink),
             suffix=_suffix_of(child.name),
         )
