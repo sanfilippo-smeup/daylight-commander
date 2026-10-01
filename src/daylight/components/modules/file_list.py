@@ -37,6 +37,7 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.events import MouseScrollDown, MouseScrollUp, Resize
+from textual.message import Message
 from textual.reactive import var
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
@@ -51,7 +52,14 @@ from daylight.models import DirEntry
 from daylight.modals import ConfirmScreen, FormScreen, ProgressScreen
 from daylight.modals.progress import Operation
 
-__all__ = ["PANEL_NAMES", "SCROLL_STEP", "SCROLLBAR_RESERVE", "FilePanel", "FilesPage"]
+__all__ = [
+    "PANEL_NAMES",
+    "SCROLL_STEP",
+    "SCROLLBAR_RESERVE",
+    "FilePanel",
+    "FilesPage",
+    "LocationChanged",
+]
 
 #: The two panes, in display order. ``active_panel`` is one of these names.
 PANEL_NAMES: tuple[str, str] = ("left", "right")
@@ -79,6 +87,19 @@ SCROLLBAR_RESERVE = 1
 CURSOR_ACTIONS: frozenset[str] = frozenset(
     {"cursor_up", "cursor_down", "page_up", "page_down", "scroll_home", "scroll_end"}
 )
+
+
+class LocationChanged(Message):
+    """The path the Files page shows changed (navigated, or the active pane moved).
+
+    The persistent header keeps a path in it (FR-501) while the listing decides
+    what that path is, so the page announces the change instead of the header
+    reaching into the panels to find out.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = Path(directory)
+        super().__init__()
 
 
 class FilePanel(Vertical):
@@ -413,6 +434,7 @@ class FilePanel(Vertical):
         # Marks belong to the directory they were made in.
         self._selected.clear()
         self.reload()
+        self.post_message(LocationChanged(self.directory))
 
     def ascend(self) -> None:
         """Navigate to the parent directory when there is one."""
@@ -794,11 +816,17 @@ class FilesPage(Vertical):
     def on_mount(self) -> None:
         """Hide the filter until asked for and hand the focus to the active panel.
 
-        The hidden filter is not focusable either, so the focus the framework
-        hands to a freshly mounted page lands on the active panel's table rather
-        than on the filter bar.
+        The hidden filter is not focusable either, and the focus is claimed here
+        instead of left to the framework's automatic first focus: a focus claimed
+        later would yank the keyboard back while the user is already typing.
         """
         self.hide_filter()
+        self.focus_active()
+
+    def focus_active(self) -> None:
+        """Put the keyboard on the active panel's table while this page is visible."""
+        if self.display:
+            self.active.focus_table()
 
     @property
     def panels(self) -> list[FilePanel]:
@@ -816,6 +844,16 @@ class FilesPage(Vertical):
     def active(self) -> FilePanel:
         """The one active panel."""
         return self.panel(self.active_panel)
+
+    @property
+    def is_ready(self) -> bool:
+        """True once compose has built the panels.
+
+        Mounting a page and composing it are two steps, so the app shell -- which
+        may show this page the instant it mounts it -- has to be able to tell
+        "mounted" from "has panels": every panel query raises before this is True.
+        """
+        return bool(self._panels)
 
     @property
     def inactive(self) -> FilePanel:
@@ -853,6 +891,9 @@ class FilesPage(Vertical):
             self.active_panel = name
         else:
             self.sync_active()
+        # The active pane is the one the header reports a path for, so a switch
+        # moves that path even though no directory changed.
+        self.post_message(LocationChanged(self.active.directory))
 
     def switch_panel(self) -> None:
         """Move the active/inactive split to the other panel."""

@@ -14,6 +14,13 @@ __all__ = [
 DEFAULT_KEYBINDINGS: dict[str, str] = {
     "quit": "ctrl+q",
     "help": "f1",
+    "command_palette": "ctrl+p",
+    # Tab navigation (DC-005). Every page is also reachable from the palette and
+    # by clicking its tab, so these are the third way in, not the only one.
+    "goto_files": "ctrl+1",
+    "goto_viewers": "ctrl+2",
+    "goto_properties": "ctrl+3",
+    "goto_settings": "ctrl+4",
     "up": "up",
     "down": "down",
     "switch_panel": "ctrl+t",

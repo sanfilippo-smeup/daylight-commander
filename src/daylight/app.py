@@ -1,19 +1,57 @@
-"""Root Textual application shell."""
+"""Root Textual application shell: header, page tabs, command palette, theming.
+
+The shell owns everything that is true of the whole app rather than of one page
+(FR-500): the persistent header and hint bar, which page is on screen, which
+theme is active, and the registry of actions the command palette offers. A page
+only knows how to do its own work, which is what keeps the palette from drifting
+away from the keybindings -- both are generated from the same ``BINDINGS``.
+
+Navigation follows ADR-005: the page a tab names is mounted into the ``.content``
+container. Pages are mounted once and then only shown or hidden, because AC3
+asks for a tab round trip that loses nothing -- a listing that was rebuilt on
+every switch would also lose the marks, the cursor and the scroll position.
+"""
 
 from __future__ import annotations
 
 import os
+from functools import partial
 from pathlib import Path
+from typing import ClassVar
 
+from textual import on
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header
+from textual.binding import Binding, BindingType
+from textual.containers import Container
+from textual.css.query import NoMatches
+from textual.reactive import var
+from textual.widget import Widget
+from textual.widgets import Tabs
 
 from daylight import themes
-from daylight.components.modules.file_list import FilesPage
+from daylight.components import file_table
+from daylight.components.command_palette import DaylightCommandProvider, PaletteCommand
+from daylight.components.modules.file_list import FilesPage, LocationChanged
+from daylight.components.modules.properties_page import PropertiesPage
+from daylight.components.modules.settings_page import SettingsPage
+from daylight.components.modules.viewers_page import ViewersPage
+from daylight.components.shell import KeyHintBar, ShellHeader, format_key
+from daylight.config import DEFAULT_KEYBINDINGS
 from daylight.managers import ConfigManager, FileManager
 from daylight.models import AppConfig
 
-__all__ = ["DaylightApp"]
+__all__ = ["DEFAULT_PAGE", "PAGE_LABELS", "DaylightApp"]
+
+#: The page every tab opens, in tab order. A tab's id is its page name.
+PAGE_LABELS: dict[str, str] = {
+    "files": "Files",
+    "viewers": "Viewers",
+    "properties": "Properties",
+    "settings": "Settings",
+}
+
+#: The page the app starts on.
+DEFAULT_PAGE = "files"
 
 
 class DaylightApp(App[None]):
@@ -22,14 +60,47 @@ class DaylightApp(App[None]):
     TITLE = "Daylight Commander"
     CSS_PATH = [
         "styles/index.tcss",
+        "styles/shell.tcss",
         "styles/files.tcss",
         "styles/operations.tcss",
         "styles/viewer.tcss",
     ]
     BINDINGS = [
-        ("ctrl+q", "quit", "Quit"),
+        # The only two app-wide hints the footer has room for; the tab keys are
+        # deliberately hidden from it and live in the palette and the tab strip.
+        Binding(DEFAULT_KEYBINDINGS["command_palette"], "command_palette", "Palette"),
+        Binding(DEFAULT_KEYBINDINGS["quit"], "quit", "Quit"),
+        Binding(DEFAULT_KEYBINDINGS["goto_files"], "goto_files", "Files", show=False),
+        Binding(DEFAULT_KEYBINDINGS["goto_viewers"], "goto_viewers", "Viewers", show=False),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_properties"], "goto_properties", "Properties", show=False
+        ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_settings"], "goto_settings", "Settings", show=False
+        ),
     ]
-    PAGES = {"files": FilesPage}
+    #: The palette keeps Textual's own system commands and adds every Daylight one.
+    COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
+    COMMAND_PALETTE_BINDING: ClassVar[str] = DEFAULT_KEYBINDINGS["command_palette"]
+
+    #: The page class behind each tab (ADR-005).
+    PAGES: ClassVar[dict[str, type[Widget]]] = {
+        "files": FilesPage,
+        "viewers": ViewersPage,
+        "properties": PropertiesPage,
+        "settings": SettingsPage,
+    }
+
+    #: App-level actions offered by the palette: ``(title, action, description)``.
+    SHELL_ACTIONS: ClassVar[tuple[tuple[str, str, str], ...]] = (
+        ("Go to Files", "goto_files", "Browse files in the dual pane"),
+        ("Go to Viewers", "goto_viewers", "Read the file across the whole pane"),
+        ("Go to Properties", "goto_properties", "Describe the entry across the whole pane"),
+        ("Go to Settings", "goto_settings", "Theme and keybindings"),
+        ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
+    )
+
+    active_page: var[str] = var(DEFAULT_PAGE, init=False)
 
     def __init__(
         self,
@@ -44,20 +115,305 @@ class DaylightApp(App[None]):
         self.app_config: AppConfig = config or self.config_manager.load()
         self.file_manager = FileManager(show_hidden=self.app_config.show_hidden)
         self.start_path: Path = self.app_config.start_path or Path.cwd()
+        #: Pages that have been mounted, by page name. A page is mounted once and
+        #: then only shown or hidden, so its state outlives the tab.
+        self._pages: dict[str, Widget] = {}
+        self.header = ShellHeader(self.TITLE, PAGE_LABELS, active=DEFAULT_PAGE)
+        self.hints = KeyHintBar()
         super().__init__()
 
-    def on_mount(self) -> None:
-        """Activate the configured Daylight theme."""
-        theme = themes.get_theme(self.app_config.theme)
-        self.register_theme(themes.to_textual_theme(theme))
-        self.theme = theme.name
+    # -- queries -----------------------------------------------------------
+
+    @property
+    def tabs(self) -> Tabs:
+        """The page tab strip in the header."""
+        return self.header.tabs
+
+    @property
+    def files_page(self) -> FilesPage | None:
+        """The Files page, once it has been mounted."""
+        try:
+            return self.query_one(FilesPage)
+        except NoMatches:
+            return None
+
+    @property
+    def settings_page(self) -> SettingsPage | None:
+        """The Settings page, once it has been mounted."""
+        try:
+            return self.query_one(SettingsPage)
+        except NoMatches:
+            return None
+
+    def current_path(self) -> Path:
+        """The path the header shows: the directory of the active pane.
+
+        Before the Files page has composed its panels there is no active pane to
+        ask, and the configured start path is the honest answer.
+        """
+        files = self.files_page
+        if files is None or not files.is_ready:
+            return self.start_path
+        return files.active.directory
+
+    def view_target(self) -> Path | None:
+        """What the Viewers and Properties tabs show.
+
+        The file last opened in a panel wins, so switching to the Viewers tab
+        after ``v`` shows that file; otherwise it follows the listing cursor.
+        """
+        files = self.files_page
+        if files is None or not files.is_ready:
+            return None
+        if files.view_target is not None:
+            return files.view_target
+        entry = files.target_entry()
+        return entry.path if entry is not None else None
+
+    def key_hints(self) -> list[tuple[str, str]]:
+        """The keybinding hints of the current view: the page's, then the app's.
+
+        A page binding and an app binding can share a key; the page wins, because
+        it is the more specific one and the one the user is actually in.
+        """
+        page = self._pages.get(self.active_page)
+        bindings: list[BindingType] = []
+        if page is not None:
+            bindings.extend(type(page).BINDINGS)
+        bindings.extend(self.BINDINGS)
+        hints: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for binding in Binding.make_bindings(bindings):
+            if not binding.show or binding.key in seen:
+                continue
+            seen.add(binding.key)
+            hints.append((binding.key, binding.description or binding.action))
+        return hints
+
+    # -- lifecycle ---------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        """Compose the shell: header, the Files page and the footer."""
-        yield Header()
-        yield FilesPage(
-            self.start_path,
-            file_manager=self.file_manager,
-            config_manager=self.config_manager,
-        )
-        yield Footer()
+        """The persistent shell: header, the content host, the hint bar.
+
+        The first page is part of the composition, so the app opens on a listing
+        rather than on an empty frame; every other page is mounted into the same
+        container the first time its tab asks for it.
+        """
+        yield self.header
+        with Container(id="content", classes="content"):
+            self._pages[DEFAULT_PAGE] = self._make_page(DEFAULT_PAGE)
+            yield self._pages[DEFAULT_PAGE]
+        yield self.hints
+
+    def on_mount(self) -> None:
+        """Register every theme and apply the configured one.
+
+        The first page is already on screen and preparing itself: the tab strip
+        reports its active tab while the app is still starting, and that is what
+        hands the keyboard to the listing. Doing it here instead would be a
+        deferred focus that lands on top of the user's first keypress.
+        """
+        for theme in themes.THEMES.values():
+            self.register_theme(themes.to_textual_theme(theme))
+        self.apply_theme(self.app_config.theme)
+
+    def get_css_variables(self) -> dict[str, str]:
+        """Publish the active theme's tokens to every stylesheet (ADR-004).
+
+        Textual's color system already provides most of these; the app's own
+        tokens are merged on top so a theme switch changes them in one place and
+        no ``.tcss`` file ever carries a color literal.
+        """
+        variables = super().get_css_variables()
+        variables.update(themes.get_css_variables(themes.get_theme(self.app_config.theme)))
+        return variables
+
+    # -- pages and tabs ----------------------------------------------------
+
+    def page(self, name: str) -> Widget:
+        """The page widget for ``name``, mounted into ``#content`` the first time."""
+        page = self._pages.get(name)
+        if page is None:
+            page = self._make_page(name)
+            self._pages[name] = page
+            self.query_one("#content").mount(page)
+        return page
+
+    def _make_page(self, name: str) -> Widget:
+        """Build a page by name; the Files page also needs the start path."""
+        if name == "files":
+            return FilesPage(
+                self.start_path,
+                file_manager=self.file_manager,
+                config_manager=self.config_manager,
+            )
+        return self.PAGES[name]()
+
+    def show_page(self, name: str) -> None:
+        """Make ``name`` the visible page and give it the keyboard (AC3).
+
+        Every other page stays mounted and is merely hidden, so coming back to a
+        tab finds the listing, the marks and the scroll position as they were.
+        """
+        if name not in self.PAGES:
+            return
+        try:
+            self.query_one("#content")
+        except NoMatches:
+            return  # the shell is not composed yet; ``on_mount`` opens the first page
+        page = self.page(name)
+        for other, widget in self._pages.items():
+            widget.display = other == name
+        self.active_page = name
+        if self.tabs.active != name:
+            self.tabs.active = name
+        self._prepare_page(page)
+        self.update_path()
+        self.refresh_hints()
+
+    def _prepare_page(self, page: Widget) -> None:
+        """Point a freshly shown page at what it should display.
+
+        A page that is still being composed prepares itself in its own
+        ``on_mount``; asking it here would query panels that do not exist yet.
+        """
+        if isinstance(page, FilesPage):
+            if page.is_ready:
+                page.sync_active()
+        elif isinstance(page, (ViewersPage, PropertiesPage)):
+            page.open_path(self.view_target())
+        elif isinstance(page, SettingsPage):
+            page.sync_themes()
+            page.focus_themes()
+
+    @on(Tabs.TabActivated)
+    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        """Show the page the newly activated tab names (ADR-005)."""
+        event.stop()
+        tab = event.tab
+        if tab is not None and tab.id:
+            self.show_page(tab.id)
+
+    @on(LocationChanged)
+    def on_location_changed(self, event: LocationChanged) -> None:
+        """Follow the listing's path into the persistent header (AC1)."""
+        del event
+        self.update_path()
+
+    def update_path(self) -> None:
+        """Show the directory being browsed in the header."""
+        self.header.set_path(file_table.format_breadcrumb(self.current_path()))
+
+    def refresh_hints(self) -> None:
+        """Re-render the hint bar for the page in view (AC1)."""
+        self.hints.show_hints(self.key_hints())
+
+    # -- actions -----------------------------------------------------------
+
+    def action_goto_files(self) -> None:
+        """``ctrl+1``: show the Files page."""
+        self.show_page("files")
+
+    def action_goto_viewers(self) -> None:
+        """``ctrl+2``: show the Viewers page."""
+        self.show_page("viewers")
+
+    def action_goto_properties(self) -> None:
+        """``ctrl+3``: show the Properties page."""
+        self.show_page("properties")
+
+    def action_goto_settings(self) -> None:
+        """``ctrl+4``: show the Settings page."""
+        self.show_page("settings")
+
+    def action_next_theme(self) -> None:
+        """Switch to the next theme in the catalogue."""
+        names = themes.theme_names()
+        current = themes.get_theme(self.app_config.theme).name
+        self.set_theme(names[(names.index(current) + 1) % len(names)])
+
+    def run_page_action(self, name: str, action: str) -> None:
+        """Show ``name`` and run one of its actions: the palette's remote control.
+
+        The page is shown first so the action happens where the user can see it,
+        and so the keyboard is on the page the action belongs to.
+        """
+        self.show_page(name)
+        page = self.page(name)
+        method = getattr(page, f"action_{action}", None)
+        if method is None:
+            self.notify(
+                f"no action {action!r} on the {PAGE_LABELS[name]} page", severity="warning"
+            )
+            return
+        method()
+
+    # -- themes ------------------------------------------------------------
+
+    def apply_theme(self, name: str) -> None:
+        """Activate the named theme and re-resolve the stylesheet (ADR-004)."""
+        theme = themes.get_theme(name)
+        self.register_theme(themes.to_textual_theme(theme))
+        self.theme = theme.name
+        self.refresh_css()
+
+    def set_theme(self, name: str) -> None:
+        """Switch to ``name`` and remember the choice in the user config (AC4)."""
+        if name not in themes.THEMES:
+            self.notify(f"unknown theme: {name}", severity="warning")
+            return
+        self.app_config = self.config_manager.update(theme=name)
+        self.apply_theme(name)
+        settings = self.settings_page
+        if settings is not None:
+            settings.sync_themes()
+        self.notify(f"theme: {name}")
+
+    # -- the command palette (FR-503, AC2) ---------------------------------
+
+    def palette_commands(self) -> list[PaletteCommand]:
+        """Every action the app can run, as palette entries (AC2).
+
+        Built from the ``BINDINGS`` the keys come from -- app-wide, per page and
+        all of them, including the ones the hint bar has no room to show -- plus
+        the tab switches and one entry per theme. Nothing is written down twice,
+        so an action cannot be reachable by key and missing here, and a search
+        result is never the same action twice.
+
+        The tab switches come from ``SHELL_ACTIONS`` only: they already reach
+        ``action_goto_*``, and listing them a second time here as well is what
+        made every page show up twice under a "go to" search.
+        """
+        commands: list[PaletteCommand] = []
+        for title, action, description in self.SHELL_ACTIONS:
+            commands.append(
+                PaletteCommand(title, description, partial(self.call_next, self.run_action, action))
+            )
+        for binding in Binding.make_bindings(list(self.BINDINGS)):
+            commands.append(
+                PaletteCommand(
+                    binding.description or binding.action,
+                    f"press {format_key(binding.key)}",
+                    partial(self.call_next, self.run_action, binding.action),
+                )
+            )
+        for name in themes.theme_names():
+            commands.append(
+                PaletteCommand(
+                    f"Theme: {name}",
+                    "Switch the theme and remember it",
+                    partial(self.set_theme, name),
+                )
+            )
+        for name, label in PAGE_LABELS.items():
+            page_class = self.PAGES[name]
+            for binding in Binding.make_bindings(list(page_class.BINDINGS)):
+                title = binding.action.replace("_", " ").capitalize()
+                commands.append(
+                    PaletteCommand(
+                        f"{label}: {title}",
+                        f"press {format_key(binding.key)}",
+                        partial(self.run_page_action, name, binding.action),
+                    )
+                )
+        return commands

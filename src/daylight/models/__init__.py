@@ -157,6 +157,11 @@ class Theme:
     success: str
     warning: str
     error: str
+    #: Whether this palette is a dark one. Textual derives different widget
+    #: variables for light and dark (scrollbars, inputs, the block cursor), so a
+    #: light theme has to say so instead of shipping light colors on a dark
+    #: design system.
+    dark: bool = True
 
 
 @dataclass(frozen=True)

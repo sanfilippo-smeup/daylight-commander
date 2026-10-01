@@ -1,0 +1,94 @@
+/* App shell: the persistent header, the page tabs, the content host and the
+   key hint bar. Every color is a theme token from
+   daylight.themes.get_css_variables() -- no literal color in this file. */
+
+.shell-header {
+    height: auto;
+    background: $surface;
+}
+
+.shell-titlebar {
+    height: 1;
+}
+
+#daylight-title {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    color: $accent;
+    background: $surface;
+    text-style: bold;
+}
+
+#daylight-path {
+    width: 1fr;
+    height: 1;
+    padding: 0 1;
+    color: $muted;
+    background: $surface;
+    text-overflow: ellipsis;
+}
+
+#daylight-tabs {
+    height: 1;
+    background: $surface;
+}
+
+/* The page currently on screen; the host itself is transparent. */
+.content {
+    height: 1fr;
+    background: $background;
+}
+
+#daylight-hints {
+    height: 1;
+    padding: 0 1;
+    color: $muted;
+    background: $panel;
+}
+
+/* Settings tab: theme picker and keybindings. */
+.settings-page {
+    height: 1fr;
+    padding: 0 2;
+    background: $background;
+}
+
+.settings-heading {
+    height: 1;
+    color: $accent;
+    text-style: bold;
+}
+
+#settings-themes {
+    height: 8;
+    margin-bottom: 1;
+    border: round $secondary;
+    background: $panel;
+}
+
+.settings-keys {
+    height: 1fr;
+    color: $foreground;
+    background: $background;
+}
+
+/* Viewers and Properties tabs: a notice line over the mounted view. */
+.viewers-page,
+.properties-page {
+    height: 1fr;
+    background: $background;
+}
+
+.view-notice {
+    display: none;
+    height: 1;
+    padding: 0 1;
+    color: $muted;
+    background: $surface;
+}
+
+.view-mount {
+    height: 1fr;
+    background: $panel;
+}
