@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "FIELD_KINDS",
+    "KEY_FORM",
+    "LINK_FORM",
     "NEW_FILE_FORM",
     "NEW_FOLDER_FORM",
     "RENAME_FORM",
@@ -216,4 +218,34 @@ RENAME_FORM = Form(
     name="rename",
     fields=[FormField(name="name", label="New name", required=True)],
     submit_label="Rename",
+)
+
+#: Blueprint for "open a URL in the browser": one required URL (FR-402).
+LINK_FORM = Form(
+    name="open_link",
+    fields=[
+        FormField(
+            name="url",
+            label="URL",
+            required=True,
+            placeholder="https://example.com",
+            help="Opened in your default browser, after you confirm it.",
+        )
+    ],
+    submit_label="Open",
+)
+
+#: Blueprint for "rebind a key": one required key, as Textual names it (FR-601).
+KEY_FORM = Form(
+    name="rebind_key",
+    fields=[
+        FormField(
+            name="key",
+            label="Key",
+            required=True,
+            placeholder="ctrl+w",
+            help="As Textual names it: a letter, or ctrl+letter.",
+        )
+    ],
+    submit_label="Rebind",
 )

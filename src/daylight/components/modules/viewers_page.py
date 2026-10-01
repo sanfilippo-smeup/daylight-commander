@@ -38,9 +38,9 @@ class ViewersPage(Vertical):
         Binding("escape", "close_view", "Close", show=True),
     ]
 
-    #: Not focusable: the viewer is not interactive, the tab bar keeps the keyboard
-    #: until the user searches inside the file.
-    can_focus = False
+    #: Focusable so this tab's own key reaches it: a page whose hint bar advertises
+    #: a key that cannot fire is a dead end (AC3).
+    can_focus = True
 
     def __init__(self) -> None:
         self.path: Path | None = None

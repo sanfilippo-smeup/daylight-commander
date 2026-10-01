@@ -47,7 +47,7 @@
     background: $panel;
 }
 
-/* Settings tab: theme picker and keybindings. */
+/* Settings tab: theme picker, the editable defaults and the keybindings. */
 .settings-page {
     height: 1fr;
     padding: 0 2;
@@ -60,16 +60,33 @@
     text-style: bold;
 }
 
-#settings-themes {
-    height: 8;
-    margin-bottom: 1;
+#settings-themes,
+#settings-defaults,
+#settings-keys {
     border: round $secondary;
     background: $panel;
+    scrollbar-size-vertical: 1;
 }
 
-.settings-keys {
+#settings-themes {
+    height: 6;
+    margin-bottom: 1;
+}
+
+#settings-defaults {
+    height: 5;
+    margin-bottom: 1;
+}
+
+/* The keybindings fill whatever is left, and are the longest list: the page
+   shows every action, so it has to scroll rather than crop. */
+#settings-keys {
     height: 1fr;
-    color: $foreground;
+}
+
+.settings-status {
+    height: 1;
+    color: $muted;
     background: $background;
 }
 

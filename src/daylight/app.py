@@ -68,15 +68,38 @@ class DaylightApp(App[None]):
     BINDINGS = [
         # The only two app-wide hints the footer has room for; the tab keys are
         # deliberately hidden from it and live in the palette and the tab strip.
-        Binding(DEFAULT_KEYBINDINGS["command_palette"], "command_palette", "Palette"),
-        Binding(DEFAULT_KEYBINDINGS["quit"], "quit", "Quit"),
-        Binding(DEFAULT_KEYBINDINGS["goto_files"], "goto_files", "Files", show=False),
-        Binding(DEFAULT_KEYBINDINGS["goto_viewers"], "goto_viewers", "Viewers", show=False),
+        # Each binding carries its action name as its ``id`` so a keybinding
+        # override from the Settings page can be applied at runtime (AC2).
         Binding(
-            DEFAULT_KEYBINDINGS["goto_properties"], "goto_properties", "Properties", show=False
+            DEFAULT_KEYBINDINGS["command_palette"],
+            "command_palette",
+            "Palette",
+            id="command_palette",
+        ),
+        Binding(DEFAULT_KEYBINDINGS["quit"], "quit", "Quit", id="quit"),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_files"], "goto_files", "Files", show=False, id="goto_files"
         ),
         Binding(
-            DEFAULT_KEYBINDINGS["goto_settings"], "goto_settings", "Settings", show=False
+            DEFAULT_KEYBINDINGS["goto_viewers"],
+            "goto_viewers",
+            "Viewers",
+            show=False,
+            id="goto_viewers",
+        ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_properties"],
+            "goto_properties",
+            "Properties",
+            show=False,
+            id="goto_properties",
+        ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_settings"],
+            "goto_settings",
+            "Settings",
+            show=False,
+            id="goto_settings",
         ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
@@ -174,20 +197,28 @@ class DaylightApp(App[None]):
         """The keybinding hints of the current view: the page's, then the app's.
 
         A page binding and an app binding can share a key; the page wins, because
-        it is the more specific one and the one the user is actually in.
+        it is the more specific one and the one the user is actually in. A key the
+        user rebound in Settings is shown as the new key, not the shipped one
+        (AC2): a hint that names a key which no longer works is worse than none.
         """
         page = self._pages.get(self.active_page)
         bindings: list[BindingType] = []
         if page is not None:
             bindings.extend(type(page).BINDINGS)
         bindings.extend(self.BINDINGS)
+        overrides = self.app_config.keybindings
         hints: list[tuple[str, str]] = []
         seen: set[str] = set()
         for binding in Binding.make_bindings(bindings):
-            if not binding.show or binding.key in seen:
+            if not binding.show:
                 continue
-            seen.add(binding.key)
-            hints.append((binding.key, binding.description or binding.action))
+            # A rebound key is the key that works, so it is also the key the
+            # hint bar has to show (AC2 with AC1's on-screen-hints promise).
+            key = overrides.get(binding.id or "", binding.key)
+            if key in seen:
+                continue
+            seen.add(key)
+            hints.append((key, binding.description or binding.action))
         return hints
 
     # -- lifecycle ---------------------------------------------------------
@@ -216,6 +247,10 @@ class DaylightApp(App[None]):
         for theme in themes.THEMES.values():
             self.register_theme(themes.to_textual_theme(theme))
         self.apply_theme(self.app_config.theme)
+        # A keybinding saved by an earlier run has to work from the first
+        # keypress, not from the next restart.
+        self.apply_keymap()
+        self.apply_defaults()
 
     def get_css_variables(self) -> dict[str, str]:
         """Publish the active theme's tokens to every stylesheet (ADR-004).
@@ -282,6 +317,9 @@ class DaylightApp(App[None]):
                 page.sync_active()
         elif isinstance(page, (ViewersPage, PropertiesPage)):
             page.open_path(self.view_target())
+            # The page is focusable so its own keys work; focusing it here is
+            # what puts them within reach (AC3).
+            page.focus()
         elif isinstance(page, SettingsPage):
             page.sync_themes()
             page.focus_themes()
@@ -369,6 +407,88 @@ class DaylightApp(App[None]):
             settings.sync_themes()
         self.notify(f"theme: {name}")
 
+    # -- settings editing (AC2) --------------------------------------------
+
+    def set_keybinding(self, action: str, key: str) -> AppConfig:
+        """Persist one keybinding override and make it the binding that is used.
+
+        The override is written to the config file and pushed into the running
+        app's keymap, so the key the Settings page shows is the key that works
+        from the next keypress on -- and the one that is read back on restart
+        (AC2). An empty ``key`` clears the override and restores the default.
+        """
+        clean = key.strip()
+        if clean == DEFAULT_KEYBINDINGS.get(action):
+            return self.clear_keybinding(action)
+        overrides = dict(self.app_config.keybindings)
+        if clean:
+            overrides[action] = clean
+        else:
+            overrides.pop(action, None)
+        self.app_config = self.config_manager.update(keybindings=overrides)
+        self.apply_keymap()
+        settings = self.settings_page
+        if settings is not None:
+            settings.sync_keys()
+        self.refresh_hints()
+        self.notify(f"{action}: {clean or DEFAULT_KEYBINDINGS.get(action, '?')}")
+        return self.app_config
+
+    def clear_keybinding(self, action: str) -> AppConfig:
+        """Drop the user's override for ``action`` and go back to the default."""
+        overrides = dict(self.app_config.keybindings)
+        overrides.pop(action, None)
+        self.app_config = self.config_manager.update(keybindings=overrides)
+        self.apply_keymap()
+        settings = self.settings_page
+        if settings is not None:
+            settings.sync_keys()
+        self.refresh_hints()
+        return self.app_config
+
+    def set_default(self, name: str, value: str) -> AppConfig:
+        """Persist one of the editable defaults and apply it to the listing.
+
+        The value arrives as the word the Settings row shows (``yes``/``no``, a
+        sort key, ``ascending``/``descending``), is converted here to what the
+        config stores, and is then applied to the running app -- the hidden-files
+        toggle reaches the file manager and the sort reaches the panels -- so an
+        edit is visible immediately and after a restart (AC2).
+        """
+        if name == "show_hidden":
+            self.app_config = self.config_manager.update(show_hidden=value == "yes")
+            self.file_manager.show_hidden = self.app_config.show_hidden
+        elif name == "sort_key":
+            self.app_config = self.config_manager.update(sort_key=value)
+        elif name == "sort_reverse":
+            self.app_config = self.config_manager.update(sort_reverse=value == "descending")
+        else:
+            self.notify(f"unknown default: {name}", severity="warning")
+            return self.app_config
+        self.apply_defaults()
+        return self.app_config
+
+    def apply_defaults(self) -> None:
+        """Push the configured defaults into the running listing (AC2)."""
+        self.file_manager.show_hidden = self.app_config.show_hidden
+        files = self.files_page
+        if files is None or not files.is_ready:
+            return
+        for panel in files.panels:
+            panel.sort_key = self.app_config.sort_key
+            panel.sort_reverse = self.app_config.sort_reverse
+            panel.reload()
+
+    def apply_keymap(self) -> None:
+        """Rebuild the runtime keymap from the configured overrides (AC2).
+
+        Textual overrides a binding by its ``id``, so every editable action
+        carries its action name as the binding id and the keymap is simply the
+        override mapping. That is what makes a rebound key work immediately
+        rather than only after a restart.
+        """
+        self.set_keymap(dict(self.app_config.keybindings))
+
     # -- the command palette (FR-503, AC2) ---------------------------------
 
     def palette_commands(self) -> list[PaletteCommand]:
@@ -389,11 +509,13 @@ class DaylightApp(App[None]):
             commands.append(
                 PaletteCommand(title, description, partial(self.call_next, self.run_action, action))
             )
+        overrides = self.app_config.keybindings
         for binding in Binding.make_bindings(list(self.BINDINGS)):
+            key = overrides.get(binding.id or "", binding.key)
             commands.append(
                 PaletteCommand(
                     binding.description or binding.action,
-                    f"press {format_key(binding.key)}",
+                    f"press {format_key(key)}",
                     partial(self.call_next, self.run_action, binding.action),
                 )
             )
@@ -409,10 +531,11 @@ class DaylightApp(App[None]):
             page_class = self.PAGES[name]
             for binding in Binding.make_bindings(list(page_class.BINDINGS)):
                 title = binding.action.replace("_", " ").capitalize()
+                key = overrides.get(binding.id or "", binding.key)
                 commands.append(
                     PaletteCommand(
                         f"{label}: {title}",
-                        f"press {format_key(binding.key)}",
+                        f"press {format_key(key)}",
                         partial(self.run_page_action, name, binding.action),
                     )
                 )

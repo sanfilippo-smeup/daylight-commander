@@ -25,6 +25,7 @@ from daylight.app import PAGE_LABELS, DaylightApp
 from daylight.components.command_palette import DaylightCommandProvider
 from daylight.components.modules.file_list import FilesPage
 from daylight.components.modules.properties_page import PropertiesPage
+from daylight.components.modules.properties_view import PropertiesView
 from daylight.components.modules.settings_page import SettingsPage
 from daylight.components.modules.viewers_page import ViewersPage
 from daylight.components.shell import HINT_SEPARATOR, format_hints, format_key
@@ -167,8 +168,15 @@ async def test_the_hint_bar_follows_the_page_on_screen(tree: Path) -> None:
         assert "Switch pane" in app.hints.hint_text()
         await pilot.press("ctrl+4")
         await wait_for(pilot, lambda app: app.active_page == "settings")
+        # The settings page has its own navigation keys, and AC1 asks for the
+        # hints of the page that is actually on screen.
         assert app.hints.hint_text() == format_hints(
-            [("ctrl+p", "Palette"), ("ctrl+q", "Quit")]
+            [
+                ("d", "Defaults"),
+                ("k", "Keys"),
+                ("ctrl+p", "Palette"),
+                ("ctrl+q", "Quit"),
+            ]
         )
 
 
@@ -396,6 +404,60 @@ async def test_the_properties_tab_describes_the_opened_entry(tree: Path) -> None
 
 
 @run_async
+async def test_every_tab_says_how_to_get_back_to_the_listing(tree: Path) -> None:
+    """AC3: no dead ends -- each tab's advertised keys really work from that tab.
+
+    A page that shows a key in the hint bar but cannot receive it is a dead end,
+    so this presses the page's own key on the page itself.
+    """
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        page = await wait_for_listing(pilot)
+        page.active.move_cursor(_index_of(page, "notes.md"))
+        page.open_view()
+        await pilot.pause()
+
+        await pilot.press("ctrl+2")
+        await wait_for(pilot, lambda app: app.active_page == "viewers")
+        viewers = app.query_one(ViewersPage)
+        await wait_for(pilot, lambda app: viewers.viewer is not None)
+        await pilot.press("escape")
+        await wait_for(pilot, lambda app: viewers.viewer is None)
+        assert viewers.path is None
+        # The Files page was never disturbed by closing the tab's viewer.
+        assert page.viewer is not None
+
+
+@run_async
+async def test_the_properties_tab_key_works_from_the_properties_tab(tree: Path) -> None:
+    """AC3: ``c`` on the Properties tab reaches the tab, not just the Files page."""
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        page = await wait_for_listing(pilot)
+        page.active.move_cursor(_index_of(page, "notes.md"))
+        page.open_properties()
+        await pilot.pause()
+        await pilot.press("ctrl+3")
+        await wait_for(pilot, lambda app: app.active_page == "properties")
+        properties = app.query_one(PropertiesPage)
+        view = properties.view
+        assert isinstance(view, PropertiesView)
+        await wait_for(pilot, lambda app: bool(view.rows))
+
+        copied: list[str] = []
+
+        def record() -> str:
+            value = view.rows[0][1]
+            copied.append(value)
+            return value
+
+        view.copy_selected = record  # type: ignore[method-assign]
+        await pilot.press("c")
+        await wait_for(pilot, lambda app: bool(copied))
+        assert copied
+
+
+@run_async
 async def test_the_settings_tab_lists_the_themes_and_takes_the_keyboard(tree: Path) -> None:
     app = make_app(tree)
     async with app.run_test(size=SIZE) as pilot:
@@ -520,9 +582,9 @@ async def test_the_settings_tab_shows_the_configured_keybinding_overrides(
         await wait_for_listing(pilot)
         await pilot.press("ctrl+4")
         await wait_for(pilot, lambda app: app.active_page == "settings")
-        listing = str(app.query_one(SettingsPage).keys_widget.content)
-        assert "Ctrl+X" in listing
-        assert "Ctrl+Q" not in listing
+        listing = app.query_one(SettingsPage).keys_text()
+        quit_row = next(line for line in listing.splitlines() if line.endswith("quit"))
+        assert quit_row.startswith("Ctrl+X")
 
 
 # -- the hint text itself ---------------------------------------------------

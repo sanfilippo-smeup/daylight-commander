@@ -33,8 +33,9 @@ class PropertiesPage(Vertical):
         Binding("c", "copy_field", "Copy field", show=True),
     ]
 
-    #: Not focusable: the page drives the view, so the listing keeps the keyboard.
-    can_focus = False
+    #: Focusable so this tab's own key reaches it: a page whose hint bar advertises
+    #: a key that cannot fire is a dead end (AC3).
+    can_focus = True
 
     def __init__(self) -> None:
         self.path: Path | None = None

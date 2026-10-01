@@ -25,6 +25,7 @@ from daylight.components.modules.file_list import FilesPage
 from daylight.components.modules.viewer import ViewerPanel
 from daylight.managers import ConfigManager, FileManager, content
 from daylight.managers.external import EditDispatch
+from daylight.modals import LaunchScreen
 from daylight.models import AppConfig
 
 SETTLE = 60
@@ -422,22 +423,180 @@ async def test_escape_closes_the_search_first(tree: Path, tmp_path: Path) -> Non
         assert page.viewer is None
 
 
-# -- AC4: a binary file is not rendered inline -----------------------------
+# -- AC4: a binary file is not rendered inline, and never launched silently --
 
 
 @run_async
-async def test_a_binary_file_goes_to_the_system_viewer(tree: Path, tmp_path: Path) -> None:
+async def test_a_binary_file_asks_before_it_goes_to_the_system_viewer(
+    tree: Path, tmp_path: Path
+) -> None:
+    """DC-006/AC1: a binary file reaches the OS only after a confirmation."""
     app = make_app(tree, tmp_path / "config.json")
     opened: list[Path] = []
-    app.file_manager.open_external = lambda path, **kwargs: opened.append(Path(path)) or 0  # type: ignore[method-assign]
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         page.active.move_cursor(row_index(page.active, "shot.png"))
         page.open_view()
         await pilot.pause()
+        # Nothing has opened yet: the confirmation is what is on screen.
+        assert opened == []
+        screen = app.screen
+        assert isinstance(screen, LaunchScreen)
+        assert "shot.png" in screen.detail_text()
+        await pilot.press("y")
+        await pilot.pause()
         assert opened == [tree / "shot.png"]
         assert page.viewer is None
+
+
+@run_async
+async def test_declining_the_confirmation_opens_nothing(
+    tree: Path, tmp_path: Path
+) -> None:
+    """DC-006/FR-403: saying no must leave the system alone."""
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "shot.png"))
+        page.open_view()
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is None
+
+
+# -- AC1: ``o`` opens a URL in the browser, after a confirmation ------------
+
+
+@run_async
+async def test_o_offers_the_url_in_the_file_under_the_cursor(
+    tree: Path, tmp_path: Path
+) -> None:
+    """DC-006/FR-402: the link in the file is detected and offered for confirmation."""
+    (tree / "bookmark.txt").write_text("see https://example.com/docs\n", encoding="utf-8")
+    app = make_app(tree, tmp_path / "config.json")
+    launched: list[str] = []
+    app.file_manager.launch = lambda request: launched.append(request.target) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "bookmark.txt"))
+        assert page.link_under_cursor() == "https://example.com/docs"
+
+        await pilot.press("o")
+        await pilot.pause()
+        assert launched == []
+        screen = app.screen
+        assert isinstance(screen, LaunchScreen)
+        assert "https://example.com/docs" in screen.detail_text()
+        await pilot.press("y")
+        await pilot.pause()
+        assert launched == ["https://example.com/docs"]
+
+
+@run_async
+async def test_o_on_a_file_without_a_link_asks_for_a_url(
+    tree: Path, tmp_path: Path
+) -> None:
+    """With nothing to offer, the URL is asked for and then still confirmed."""
+    app = make_app(tree, tmp_path / "config.json")
+    launched: list[str] = []
+    app.file_manager.launch = lambda request: launched.append(request.target) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+
+        await pilot.press("o")
+        await pilot.pause()
+        assert app.screen.__class__.__name__ == "FormScreen"
+        field = app.screen.query_one("Input")
+        field.value = "https://example.com/typed"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Typing a URL does not launch it; the confirmation comes first.
+        assert launched == []
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press("y")
+        await pilot.pause()
+        assert launched == ["https://example.com/typed"]
+
+
+@run_async
+async def test_a_typed_url_that_is_not_a_url_is_refused(
+    tree: Path, tmp_path: Path
+) -> None:
+    """Only the declared schemes reach the browser (FR-402, the security note)."""
+    app = make_app(tree, tmp_path / "config.json")
+    launched: list[str] = []
+    app.file_manager.launch = lambda request: launched.append(request.target) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+
+        await pilot.press("o")
+        await pilot.pause()
+        field = app.screen.query_one("Input")
+        field.value = "file:///etc/passwd"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert launched == []
+        assert not isinstance(app.screen, LaunchScreen)
+
+
+@run_async
+async def test_e_on_a_binary_file_confirms_before_the_os_takes_it(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC1: ``e`` on a non-text file is a launch, so it asks first."""
+    app = make_app(tree, tmp_path / "config.json")
+    launched: list[Path] = []
+    app.file_manager.launch = lambda request: launched.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "shot.png"))
+        page.edit_target()
+        await pilot.pause()
+        assert launched == []
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press("n")
+        await pilot.pause()
+        assert launched == []
+
+
+@run_async
+async def test_e_on_a_text_file_still_runs_the_editor_without_asking(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``$EDITOR`` runs in this terminal: not a launch, so no modal (FR-403)."""
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "nano")
+    app = make_app(tree, tmp_path / "config.json")
+    calls: list[Path] = []
+
+    def record(path: Path, **kwargs: Any) -> EditDispatch:
+        calls.append(Path(path))
+        return dispatch_for(Path(path))
+
+    app.file_manager.edit = record  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.edit_target()
+        await pilot.pause()
+        assert calls == [tree / "code.py"]
+        assert not isinstance(app.screen, LaunchScreen)
 
 
 # -- AC5: edit by type -----------------------------------------------------
@@ -474,17 +633,18 @@ async def test_editing_a_binary_file_runs_the_os_application(
     monkeypatch.delenv("EDITOR", raising=False)
     calls: list[list[str]] = []
     app = make_app(tree, tmp_path / "config.json")
-
-    def record(path: Path, **kwargs: Any) -> EditDispatch:
-        calls.append([str(path)])
-        return dispatch_for(path, "external")
-
-    app.file_manager.edit = record  # type: ignore[method-assign]
+    app.file_manager.launch = lambda request: calls.append(  # type: ignore[method-assign]
+        [request.target]
+    ) or 0
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         page.active.move_cursor(row_index(page.active, "shot.png"))
         page.action_edit()
+        await pilot.pause()
+        # DC-006: a binary edit is a launch, so the confirmation comes first.
+        assert calls == []
+        await pilot.press("y")
         await pilot.pause()
         assert calls == [[str(tree / "shot.png")]]
 

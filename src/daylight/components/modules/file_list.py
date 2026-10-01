@@ -22,9 +22,12 @@ loop turning and offers Cancel (AC3).
 Viewing and editing (DC-004, AC1-AC6) keep that split as well, and add the rule
 that decides where a viewer goes: :meth:`FilesPage.open_view` mounts it into the
 *inactive* panel and nowhere else, so the listing being browsed is never covered
-and nothing is ever pushed fullscreen. A binary file is never rendered inline:
-it goes straight to the OS default application, and ``e`` hands text to
-``$EDITOR`` and everything else to the OS.
+and nothing is ever pushed fullscreen. A binary file is never rendered inline,
+and neither it nor a URL is ever launched without asking first (DC-006): every
+hand-off to another application goes through :meth:`FilesPage.prompt_launch` and
+a :class:`~daylight.modals.LaunchScreen` that names the target and the
+application (FR-403). ``e`` still hands text to ``$EDITOR`` -- that runs in this
+terminal, so it is not an external launch.
 """
 
 from __future__ import annotations
@@ -45,11 +48,11 @@ from textual.widgets import DataTable, Input, Static
 from daylight.components import file_table
 from daylight.components.modules.properties_view import PropertiesView
 from daylight.components.modules.viewer import ViewerPanel
-from daylight.forms import NEW_FILE_FORM, NEW_FOLDER_FORM, RENAME_FORM
+from daylight.forms import LINK_FORM, NEW_FILE_FORM, NEW_FOLDER_FORM, RENAME_FORM
 from daylight.managers import ConfigManager, FileManager
-from daylight.managers.external import EditDispatch
+from daylight.managers.external import EditDispatch, LaunchRequest, is_url
 from daylight.models import DirEntry
-from daylight.modals import ConfirmScreen, FormScreen, ProgressScreen
+from daylight.modals import ConfirmScreen, FormScreen, LaunchScreen, ProgressScreen
 from daylight.modals.progress import Operation
 
 __all__ = [
@@ -754,39 +757,49 @@ class FilesPage(Vertical):
     """The dual-pane Files page and its active/inactive focus model."""
 
     DEFAULT_CLASSES = "files-page"
+    # ``id`` on every binding is the action name, which is what lets a keybinding
+    # override from the Settings page be applied at runtime (DC-006, AC2).
     BINDINGS = [
-        Binding("ctrl+t", "switch_panel", "Switch pane", show=True),
-        Binding("backspace", "go_up", "Up", show=True),
-        Binding("slash", "start_filter", "Filter", show=True),
-        Binding("ctrl+h", "toggle_hidden", "Hidden", show=True),
-        Binding("s", "cycle_sort", "Sort", show=True),
-        Binding("r", "reverse_sort", "Reverse", show=True),
+        Binding("ctrl+t", "switch_panel", "Switch pane", show=True, id="switch_panel"),
+        Binding("backspace", "go_up", "Up", show=True, id="go_up"),
+        Binding("slash", "start_filter", "Filter", show=True, id="start_filter"),
+        Binding("ctrl+h", "toggle_hidden", "Hidden", show=True, id="toggle_hidden"),
+        Binding("s", "cycle_sort", "Sort", show=True, id="cycle_sort"),
+        Binding("r", "reverse_sort", "Reverse", show=True, id="reverse_sort"),
         # The operation keys are deliberately hidden from the footer: the bar
         # already runs out of room at 120 columns, and the navigation keys that
         # were there first are the ones a new user needs to see.
-        Binding("space", "toggle_select", "Select", show=False),
-        Binding("ctrl+a", "select_all", "Select all", show=False),
-        Binding("a", "clear_selection", "Select none", show=False),
-        Binding("f5", "copy_to_other", "Copy", show=False),
-        Binding("f6", "move_to_other", "Move", show=False),
-        Binding("f7", "new_directory", "New dir", show=False),
-        Binding("f8", "new_file", "New file", show=False),
-        Binding("n", "rename", "Rename", show=False),
-        Binding("d", "delete", "Delete", show=False),
-        Binding("D", "delete_permanent", "Wipe", show=False),
+        Binding("space", "toggle_select", "Select", show=False, id="toggle_select"),
+        Binding("ctrl+a", "select_all", "Select all", show=False, id="select_all"),
+        Binding("a", "clear_selection", "Select none", show=False, id="clear_selection"),
+        Binding("f5", "copy_to_other", "Copy", show=False, id="copy_to_other"),
+        Binding("f6", "move_to_other", "Move", show=False, id="move_to_other"),
+        Binding("f7", "new_directory", "New dir", show=False, id="new_directory"),
+        Binding("f8", "new_file", "New file", show=False, id="new_file"),
+        Binding("n", "rename", "Rename", show=False, id="rename"),
+        Binding("d", "delete", "Delete", show=False, id="delete"),
+        Binding("D", "delete_permanent", "Wipe", show=False, id="delete_permanent"),
         # Viewing keys. Hidden from the footer for the same reason as the
         # operation keys above; the viewer header repeats them while one is open.
-        Binding("v", "view", "View", show=False),
-        Binding("i", "properties", "Info", show=False),
-        Binding("e", "edit", "Edit", show=False),
-        Binding("c", "copy_property", "Copy field", show=False),
-        Binding("N", "next_match", "Next match", show=False),
-        Binding("ctrl+f", "search_viewer", "Find", show=False),
-        Binding("ctrl+up", "viewer_up", "Viewer up", show=False),
-        Binding("ctrl+down", "viewer_down", "Viewer down", show=False),
-        Binding("ctrl+pageup", "viewer_page_up", "Viewer page up", show=False),
-        Binding("ctrl+pagedown", "viewer_page_down", "Viewer page down", show=False),
-        Binding("escape", "close_viewer", "Close viewer", show=False),
+        Binding("v", "view", "View", show=False, id="view"),
+        Binding("i", "properties", "Info", show=False, id="properties"),
+        Binding("e", "edit", "Edit", show=False, id="edit"),
+        Binding("c", "copy_property", "Copy field", show=False, id="copy_property"),
+        Binding("N", "next_match", "Next match", show=False, id="next_match"),
+        Binding("ctrl+f", "search_viewer", "Find", show=False, id="search_viewer"),
+        Binding("ctrl+up", "viewer_up", "Viewer up", show=False, id="viewer_up"),
+        Binding("ctrl+down", "viewer_down", "Viewer down", show=False, id="viewer_down"),
+        Binding("ctrl+pageup", "viewer_page_up", "Viewer page up", show=False, id="viewer_page_up"),
+        Binding(
+            "ctrl+pagedown",
+            "viewer_page_down",
+            "Viewer page down",
+            show=False,
+            id="viewer_page_down",
+        ),
+        Binding("escape", "close_viewer", "Close viewer", show=False, id="close_viewer"),
+        # DC-006: ``o`` asks for a URL and confirms it before the browser opens.
+        Binding("o", "open_link", "Link", show=False, id="open_link"),
     ]
 
     active_panel: var[str] = var(PANEL_NAMES[0], init=False)
@@ -1060,7 +1073,8 @@ class FilesPage(Vertical):
 
         The viewer always goes into the *inactive* pane and is never pushed as a
         screen, so the listing being browsed is never covered. A binary file is
-        never rendered inline: it is handed to the OS default application (AC4).
+        never rendered inline: it goes to the OS default application, but only
+        after the launch has been confirmed (AC4 of DC-004, AC1 of DC-006).
         """
         entry = self.target_entry()
         if entry is None:
@@ -1070,8 +1084,7 @@ class FilesPage(Vertical):
             return None
         kind = self.manager.view_kind(entry.path)
         if kind == "binary":
-            self.manager.open_external(entry.path)
-            self.notify(f"{entry.name} is binary: opened in the system viewer")
+            self.prompt_launch(self.manager.describe_open(entry.path))
             return None
         self.clear_viewers()
         self._view_target = entry.path
@@ -1101,6 +1114,11 @@ class FilesPage(Vertical):
         the OS default application. The editor owns the terminal while it runs, so
         the app is suspended around the call and the view is reloaded after it --
         otherwise the viewer would still show the file as it was before the edit.
+
+        An edit that hands the file to *another application* is a launch, so it
+        confirms first (DC-006, FR-403): ``e`` on a PDF asks before the PDF
+        viewer opens. ``$EDITOR`` runs inside this terminal, so it is not an
+        external hand-off and needs no confirmation.
         """
         entry = self.target_entry()
         if entry is None:
@@ -1108,10 +1126,18 @@ class FilesPage(Vertical):
         if entry.is_dir:
             self.notify("a directory has nothing to edit", severity="warning")
             return
-        widget = self._widget_for(entry.path)
-        dispatch = self._run_suspended(entry.path)
+        request = self.manager.describe_edit(entry.path)
+        if not request.is_editor:
+            self.prompt_launch(request)
+            return
+        self._edit_now(entry.path)
+
+    def _edit_now(self, path: Path) -> None:
+        """Run the edit dispatch for ``path`` and refresh what is showing it."""
+        widget = self._widget_for(path)
+        dispatch = self._run_suspended(path)
         program = dispatch.command[0] if dispatch.command else "?"
-        self.notify(f"{entry.name} \u2192 {program}")
+        self.notify(f"{path.name} → {program}")
         if isinstance(widget, ViewerPanel):
             widget.load()
         elif isinstance(widget, PropertiesView):
@@ -1129,6 +1155,65 @@ class FilesPage(Vertical):
                 return self.manager.edit(path)
         except SuspendNotSupported:
             return self.manager.edit(path)
+
+    # -- external launches (DC-006, AC1) -----------------------------------
+
+    def prompt_launch(self, request: LaunchRequest) -> None:
+        """Confirm ``request`` and run it only if the user says yes (FR-403).
+
+        The launch is wired into the answer callback and nowhere else, so a
+        declined dialog cannot have opened anything -- that is the property the
+        card's risk is about, and it is why nothing in this page calls
+        ``open_external`` or ``open_link`` directly.
+        """
+        self.app.push_screen(
+            LaunchScreen(request),
+            lambda confirmed: self._launch_done(confirmed, request),
+        )
+
+    def _launch_done(self, confirmed: bool | None, request: LaunchRequest) -> None:
+        """Run the confirmed launch; report a refusal rather than doing nothing."""
+        if not confirmed:
+            self.notify("not launched")
+            return
+        self.manager.launch(request)
+        self.notify(f"{request.program}: {request.target}")
+
+    def prompt_link(self, url: str | None = None) -> None:
+        """Ask for a URL when there is none, then confirm it before opening it."""
+        if url:
+            self.open_link_confirmed(url)
+            return
+        self.app.push_screen(
+            FormScreen(LINK_FORM, title="Open link"),
+            lambda values: self._link_entered(values),
+        )
+
+    def _link_entered(self, values: dict[str, str] | None) -> None:
+        """Validate what the URL form returned and ask before opening it."""
+        if not values:
+            return
+        url = values.get("url", "").strip()
+        if not is_url(url):
+            self.notify(f"not a URL: {url}", severity="warning")
+            return
+        self.open_link_confirmed(url)
+
+    def open_link_confirmed(self, url: str) -> None:
+        """Describe the browser launch for ``url`` and put it behind a confirm."""
+        try:
+            request = self.manager.describe_link(url)
+        except ValueError as error:
+            self.notify(str(error), severity="warning")
+            return
+        self.prompt_launch(request)
+
+    def link_under_cursor(self) -> str | None:
+        """The URL in the file under the cursor, when it holds one (FR-402)."""
+        entry = self.target_entry()
+        if entry is None or entry.is_dir:
+            return None
+        return self.manager.url_in_file(entry.path)
 
     def _widget_for(self, path: Path) -> Widget | None:
         """Return the mounted widget showing ``path``, if there is one."""
@@ -1204,6 +1289,17 @@ class FilesPage(Vertical):
             viewer = self.viewer
             if viewer is not None:
                 viewer.next_hit()
+
+    def action_open_link(self) -> None:
+        """``o``: open a URL with the default browser, after a confirmation.
+
+        A file under the cursor that holds a URL is offered it directly; with
+        nothing under the cursor the URL is asked for first. Either way the
+        browser only opens once the confirmation says yes (FR-402, FR-403).
+        """
+        if self._filter_has_focus():
+            return
+        self.prompt_link(self.link_under_cursor())
 
     def action_copy_property(self) -> None:
         """``c``: copy the value under the cursor in the properties view."""

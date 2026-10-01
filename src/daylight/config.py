@@ -46,6 +46,9 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "next_match": "N",
     "search_viewer": "ctrl+f",
     "close_viewer": "escape",
+    # External launches (DC-006). ``o`` opens a URL found in the entry under the
+    # cursor with the default browser, always behind a confirmation (FR-402).
+    "open_link": "o",
 }
 
 #: Kind -> display symbol.

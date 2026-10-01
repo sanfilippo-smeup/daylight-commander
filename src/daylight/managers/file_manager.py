@@ -260,6 +260,54 @@ class FileManager:
         """Open ``path`` in the OS default application (binary files, AC4)."""
         return external.open_external(path, runner=runner)
 
+    def describe_open(self, path: str | os.PathLike[str]) -> external.LaunchRequest:
+        """Describe the external open of ``path``: target, app and argv (FR-403)."""
+        return external.describe_open(path)
+
+    def launch(
+        self,
+        request: external.LaunchRequest,
+        *,
+        runner: external.Runner | None = None,
+    ) -> int:
+        """Run a confirmed launch; return its exit status (FR-403).
+
+        This is the only way a launch reaches the system: the UI describes a
+        request, asks, and calls this with the answer, so the "asked first"
+        property is enforced by there being no other way out.
+        """
+        return request.run(runner)
+
+    def open_link(
+        self,
+        url: str,
+        *,
+        runner: external.Runner | None = None,
+    ) -> int:
+        """Open ``url`` in the default browser (FR-402)."""
+        return external.open_link(url, runner=runner)
+
+    def describe_link(self, url: str) -> external.LaunchRequest:
+        """Describe opening ``url`` in the default browser, without running it."""
+        return external.describe_link(url)
+
+    def detect_url(self, text: str) -> str | None:
+        """Return the first URL in ``text``, or None when there is none (FR-402)."""
+        return external.detect_url(text)
+
+    def url_in_file(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        lines: int = 64,
+    ) -> str | None:
+        """Return the first URL in the head of a text file, or None (FR-402)."""
+        return external.detect_url_in_file(path, lines=lines)
+
+    def describe_edit(self, path: str | os.PathLike[str]) -> external.LaunchRequest:
+        """Describe what editing ``path`` would launch, and with which app."""
+        return external.describe_edit(external.edit_dispatch(path))
+
     def edit(
         self,
         path: str | os.PathLike[str],
