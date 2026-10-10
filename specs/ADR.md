@@ -195,6 +195,9 @@ Centralize them in `config.py`, referenced by `BINDINGS` and by module code
    default; the inactive panel hosts the internal viewer (FR-306).
 3. **Markdown rendering engine** — choose between Textual's `Markdown` widget
    (preferred) or a custom renderer for tighter control.
+4. ~~**Right-panel tabsheet contents**~~ — resolved: Tab 1 is the directory
+   view, Tab 2 is the file viewer, shown only when a text file is opened.
+   See ADR-011.
 
 ## ADR-010 — Internal viewer: split-pane, format-aware, never fullscreen
 
@@ -219,3 +222,49 @@ own tools.
 - File-type detection (text/binary/MIME) lives in `managers/`, keeping the UI
   free of disk and sniffing logic.
 - No custom editor is built; the user's `$EDITOR` and OS defaults are reused.
+
+---
+
+## ADR-011 — Right panel becomes a two-tab tabsheet
+
+### Context
+The delivered app stacks a directory view on top and a file viewer on the bottom
+of the right panel. The owner wants these as two switchable tabs instead of a
+single stacked region, with the file viewer shown only when it has something to
+show.
+
+### Decision
+Replace the single right panel with a **two-tab tabsheet**:
+- **Tab 1 — Directory**: the inactive directory listing, always visible.
+- **Tab 2 — Viewer**: the internal file viewer, shown (and brought to the
+  front) only when a text file is opened; otherwise hidden or empty.
+
+The viewer tab preserves ADR-010's "never fullscreen, opens on the right when the
+left is focused" rule.
+
+### Consequences
+- The right side keeps the directory in context while a file is previewed, in
+  separate tabs rather than a stacked split.
+- The viewer tab is conditionally visible: empty/absent until a text file is
+  opened, then it activates and holds the preview.
+- Snapshot tests and the `.panel-mount` contract change; DC-002's mount point
+  moves into the viewer tab.
+
+---
+
+## ADR-012 — Sortable column headers with a visible order indicator
+
+### Context
+Sorting was reachable only via the keyboard (`s` / `r`) and the active sort was
+not visually obvious. The owner wants mouse-driven sorting plus a clear indicator.
+
+### Decision
+Make each listing column header clickable: a click sorts that column ascending,
+a second click sorts it descending. The current sort column and direction are
+shown with an arrow icon next to the header. Sorting logic stays in the
+manager/table-builder layer (ADR-006); the widget only exposes the click and
+renders the indicator.
+
+### Consequences
+- Keyboard sorting (`s`/`r`) remains and stays in sync with the header indicator.
+- The table builder returns sort key + direction so the widget can render the arrow.

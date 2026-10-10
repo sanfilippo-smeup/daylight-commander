@@ -5,7 +5,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft |
+| Status | Draft — Revision 2 |
 | Product | Terminal file manager (TUI) |
 | Target users | Developers / technical users |
 | Platform | Python >= 3.13, terminal (256-color / truecolor) |
@@ -65,15 +65,28 @@ and servers.
 ### 5.1 File listing / navigation (FR-100)
 - **FR-101** — List the contents of a directory in a sortable, filterable table.
 - **FR-102** — Navigate directories with `Enter`, go up with `..`/Backspace.
-- **FR-103** — Dual-pane layout by default: two side-by-side directory panels.
-  The active panel is where you browse; the inactive panel hosts the internal
-  viewer while previewing a file (single-pane mode remains available).
-- **FR-104** — Filter-as-you-type (`/` or typing filters the visible rows).
+- **FR-103** — Dual-pane layout by default: a directory panel on the left and a
+  two-tab tabsheet on the right. Tab 1 is the directory view (always visible);
+  Tab 2 is the file viewer, shown only when a text file is opened. The left panel
+  is where you browse (single-pane mode remains available).
+- **FR-104** — Filter-as-you-type (`/` or typing filters the visible rows). The
+  filter is **cleared automatically when entering a new directory** so the next
+  listing starts unfiltered.
 - **FR-105** — Sort by name, size, modified time, or type; ascending/descending.
+  The **active sort column and direction are always visible in the panel header**,
+  and **clicking a column header sorts by that column** (ascending first, then
+  toggling to descending on a second click), indicated by an arrow icon next to
+  the header.
 - **FR-106** — Show file metadata in the listing: size (human-readable), modified
   time, permissions, and an icon/emoji for the type.
 - **FR-107** — Show hidden files via a toggle; remember the preference.
 - **FR-108** — Breadcrumb / path bar showing the current directory.
+- **FR-109** — **Type-ahead prefix navigation**: while the left panel is focused,
+  each keystroke moves the cursor to the first entry whose name starts with the
+  accumulated prefix. If no entry matches the prefix, the cursor moves to the next
+  entry in alphabetical order. A repeated keystroke advances the cursor to the
+  next entry with the same prefix, and so on; when no further entry shares the
+  prefix, the cursor moves to the next entry in alphabetical order.
 
 ### 5.2 File operations (FR-200)
 - **FR-201** — Copy, move, rename, and delete files and directories.
@@ -100,9 +113,9 @@ and servers.
 - **FR-305** — **Format-aware internal viewer**: render `.md`, JSON, YAML, and
   plain/source code inline; binary files are never rendered inline and instead
   open in the OS default viewer (e.g. Preview on macOS).
-- **FR-306** — **Split-pane preview**: the internal viewer opens in the
-  inactive panel — focused on the left tree, the viewer is on the right, and
-  vice-versa. Never fullscreen.
+- **FR-306** — **Tab preview**: the internal viewer opens in the right
+  tabsheet's Viewer tab (Tab 2) — focused on the left tree, the viewer is on the
+  right. It is shown only when a text file is opened and is never fullscreen.
 
 ### 5.4 External launchers (FR-400)
 - **FR-401** — **File launcher**: open a file with the OS default application
@@ -110,7 +123,9 @@ and servers.
 - **FR-402** — **Link launcher**: detect and open URLs (in Markdown/text files)
   with the default browser, after an explicit confirm.
 - **FR-403** — Launching is opt-in (never auto-opens); show what will open and
-  with which app.
+  with which app. The confirmation dialog has the **"Open" button focused by
+  default**: pressing `Enter` triggers the open action, and the "Cancel" button
+  is reachable via `Tab`.
 
 ### 5.5 Navigation & app shell (FR-500)
 - **FR-501** — Persistent header with app title, current path, and page tabs.
