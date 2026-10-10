@@ -79,7 +79,10 @@ def test_stat_missing_path_raises(tmp_path: Path) -> None:
         FileManager().stat(tmp_path / "missing.txt")
 
 
-def test_config_manager_stub_returns_defaults(tmp_path: Path) -> None:
+def test_config_manager_stub_returns_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert ConfigManager().load() == DEFAULT_CONFIG
     assert ConfigManager(tmp_path / "config.json").load() == DEFAULT_CONFIG
 
