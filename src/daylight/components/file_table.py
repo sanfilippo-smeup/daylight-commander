@@ -15,11 +15,14 @@ from daylight.models import DirEntry
 
 __all__ = [
     "COLUMNS",
+    "COLUMN_SORT_KEYS",
     "SCROLL_BUFFER",
+    "SORT_ARROWS",
     "SORT_KEYS",
     "build_row",
     "build_rows",
     "chain_entries",
+    "column_labels",
     "filter_entries",
     "format_breadcrumb",
     "format_mtime",
@@ -28,12 +31,24 @@ __all__ = [
     "icon_for",
     "next_sort_key",
     "sort_entries",
+    "sort_key_for_column",
     "type_label",
     "window_bounds",
 ]
 
 #: Sort keys offered by the Files page, in toggle order.
 SORT_KEYS: tuple[str, ...] = ("name", "size", "time", "type")
+
+#: Sort key a click on each listing column selects, aligned with :data:`COLUMNS`.
+#:
+#: The listing shows Name, Size, Modified and Perms, while the sort keys are
+#: name, size, time and type. The type itself is drawn as the icon in the Name
+#: column (FR-106), so the Perms column carries the remaining ``type`` key and
+#: every sort key stays reachable from a header click (FR-105).
+COLUMN_SORT_KEYS: tuple[str, ...] = ("name", "size", "time", "type")
+
+#: Arrow appended to the active column header: ascending, then descending.
+SORT_ARROWS: tuple[str, str] = ("\u2191", "\u2193")
 
 #: Rows kept either side of the viewport, on top of the rows that fit on screen.
 #:
@@ -240,6 +255,30 @@ def next_sort_key(current: str) -> str:
     if current not in SORT_KEYS:
         return SORT_KEYS[0]
     return SORT_KEYS[(SORT_KEYS.index(current) + 1) % len(SORT_KEYS)]
+
+
+def sort_key_for_column(column_index: int) -> str | None:
+    """Return the sort key a click on column ``column_index`` selects.
+
+    ``None`` for an index outside the listing columns, so a click on a header
+    the table does not own is ignored instead of raising.
+    """
+    if 0 <= column_index < len(COLUMN_SORT_KEYS):
+        return COLUMN_SORT_KEYS[column_index]
+    return None
+
+
+def column_labels(sort_key: str, reverse: bool = False) -> tuple[tuple[str, int], ...]:
+    """Return :data:`COLUMNS` with an arrow on the active sort column.
+
+    The arrow is appended to the header label, so the widget only renders what
+    this returns: the sort key and direction stay in this layer (ADR-012).
+    """
+    arrow = SORT_ARROWS[1 if reverse else 0]
+    return tuple(
+        (f"{label} {arrow}" if key == sort_key else label, width)
+        for (label, width), key in zip(COLUMNS, COLUMN_SORT_KEYS, strict=True)
+    )
 
 
 def chain_entries(

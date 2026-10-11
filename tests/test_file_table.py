@@ -228,6 +228,48 @@ def test_sort_entries_rejects_unknown_keys(entries: list[DirEntry]) -> None:
         file_table.sort_entries(entries, "bogus")
 
 
+# -- header sort surface (DC-009) ------------------------------------------
+
+
+def test_column_sort_keys_align_with_the_columns() -> None:
+    assert len(file_table.COLUMN_SORT_KEYS) == len(file_table.COLUMNS)
+    assert file_table.COLUMN_SORT_KEYS == ("name", "size", "time", "type")
+
+
+def test_sort_key_for_column_maps_each_header() -> None:
+    assert file_table.sort_key_for_column(0) == "name"
+    assert file_table.sort_key_for_column(1) == "size"
+    assert file_table.sort_key_for_column(2) == "time"
+    assert file_table.sort_key_for_column(3) == "type"
+
+
+def test_sort_key_for_column_ignores_unknown_headers() -> None:
+    assert file_table.sort_key_for_column(-1) is None
+    assert file_table.sort_key_for_column(len(file_table.COLUMNS)) is None
+
+
+def test_column_labels_marks_the_active_column_ascending() -> None:
+    labels = file_table.column_labels("size", reverse=False)
+    assert labels[1][0] == f"Size {file_table.SORT_ARROWS[0]}"
+    assert labels[0][0] == "Name"
+
+
+def test_column_labels_marks_the_active_column_descending() -> None:
+    labels = file_table.column_labels("time", reverse=True)
+    assert labels[2][0] == f"Modified {file_table.SORT_ARROWS[1]}"
+
+
+def test_column_labels_keeps_the_column_widths() -> None:
+    labels = file_table.column_labels("name")
+    assert [width for _, width in labels] == [width for _, width in file_table.COLUMNS]
+
+
+def test_column_labels_marks_exactly_one_column() -> None:
+    labels = file_table.column_labels("type")
+    marked = [label for label, _ in labels if label.endswith(file_table.SORT_ARROWS[0])]
+    assert marked == [f"Perms {file_table.SORT_ARROWS[0]}"]
+
+
 # -- the full pipeline -----------------------------------------------------
 
 

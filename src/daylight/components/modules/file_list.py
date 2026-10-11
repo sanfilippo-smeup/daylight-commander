@@ -309,9 +309,24 @@ class FilePanel(Vertical):
 
     def on_mount(self) -> None:
         """Declare the columns once, then kick off the first listing."""
-        for label, width in file_table.COLUMNS:
-            self.table.add_column(label, width=width or None)
+        self._sync_headers()
         self.reload()
+
+    def _sync_headers(self) -> None:
+        """Render the sort indicator into the column headers (ADR-012).
+
+        The labels come from the table builder, so the widget only draws what
+        the sort key and direction say. Rebuilding the columns is how a Textual
+        ``DataTable`` relabels a header; it is skipped while the labels already
+        match, so a plain re-filter does not churn the table.
+        """
+        labels = file_table.column_labels(self.sort_key, self.sort_reverse)
+        current = tuple(column.label.plain for column in self.table.ordered_columns)
+        if current == tuple(label for label, _ in labels):
+            return
+        self.table.clear(columns=True)
+        for label, width in labels:
+            self.table.add_column(label, width=width or None)
 
     def on_resize(self, event: Resize) -> None:
         """Re-materialise the window: a resize changes how many rows fit."""
@@ -365,6 +380,9 @@ class FilePanel(Vertical):
         if self._selected:
             self._selected.intersection_update(entry.path for entry in visible)
         self._listing = False
+        # The sort may have changed (a header click, ``s``/``r``), so the
+        # header indicator is refreshed before the rows are rebuilt.
+        self._sync_headers()
         # A new listing replaces the rows behind the same window bounds (a
         # re-sort, a new filter), so the rebuild cannot be skipped here.
         self.show_range(0, 0, force=True)
@@ -448,6 +466,20 @@ class FilePanel(Vertical):
     def reverse_sort(self) -> None:
         """Reverse the current sort."""
         self.sort_reverse = not self.sort_reverse
+        self.refresh_view()
+
+    def sort_by(self, key: str) -> None:
+        """Sort by ``key``: ascending, or descending when it is already active.
+
+        This is what a header click selects (FR-105): the first click sorts the
+        column ascending, a second click on the same column flips it to
+        descending. A different column always starts ascending.
+        """
+        if key == self.sort_key:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_key = key
+            self.sort_reverse = False
         self.refresh_view()
 
     # -- navigation --------------------------------------------------------
@@ -762,6 +794,19 @@ class FilePanel(Vertical):
         marked = self.selection_marker()
         text = f" {path}  \u2502  {self.listing_marker()}  "
         return f"{text}{marked}" if marked else text.rstrip()
+
+    @on(DataTable.HeaderSelected, "DataTable")
+    def on_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        """Clicking a column header sorts by that column (FR-105, ADR-012).
+
+        The widget only turns the click into a sort key; the ordering itself
+        stays in the table builder. The selector is the widget type, not
+        ``#table-*``, for the same reason as :meth:`on_row_selected`.
+        """
+        event.stop()
+        key = file_table.sort_key_for_column(event.column_index)
+        if key is not None:
+            self.sort_by(key)
 
     @on(DataTable.RowSelected, "DataTable")
     def on_row_selected(self, event: DataTable.RowSelected) -> None:

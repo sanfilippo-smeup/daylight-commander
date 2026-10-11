@@ -21,9 +21,10 @@ import pytest
 from textual.coordinate import Coordinate
 from textual.events import MouseScrollDown, MouseScrollUp
 from textual.pilot import Pilot
-from textual.widgets import Input, Label
+from textual.widgets import DataTable, Input, Label
 
 from daylight.app import DaylightApp
+from daylight.components import file_table
 from daylight.components.modules.file_list import (
     PANEL_NAMES,
     SCROLL_STEP,
@@ -571,6 +572,110 @@ async def test_reverse_sort_flips_the_order(tree: Path, tmp_path: Path) -> None:
         await wait_for(pilot, lambda: left.sort_reverse and not left.loading)
         assert plain_names(left)[0] == ".."
         assert plain_names(left)[1:] == before[:0:-1]
+
+
+# -- DC-009: clickable headers and the sort indicator ----------------------
+
+
+def header_x(table: DataTable, column_index: int) -> int:
+    """The x of a column header's centre, for a real header click."""
+    columns = table.ordered_columns
+    left = sum(column.get_render_width(table) for column in columns[:column_index])
+    return left + columns[column_index].get_render_width(table) // 2
+
+
+def header_labels(panel: FilePanel) -> list[str]:
+    """The header labels the panel's table currently renders."""
+    return [column.label.plain for column in panel.table.ordered_columns]
+
+
+@run_async
+async def test_clicking_a_header_sorts_that_column_ascending(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.click(left.table, offset=(header_x(left.table, 1), 0))
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        assert left.sort_reverse is False
+        sizes = [entry.size for entry in left.visible_entries if not entry.is_dir]
+        assert sizes == sorted(sizes)
+
+
+@run_async
+async def test_clicking_the_same_header_again_sorts_descending(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.click(left.table, offset=(header_x(left.table, 1), 0))
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        await pilot.click(left.table, offset=(header_x(left.table, 1), 0))
+        await wait_for(pilot, lambda: left.sort_reverse and not left.loading)
+        sizes = [entry.size for entry in left.visible_entries if not entry.is_dir]
+        assert sizes == sorted(sizes, reverse=True)
+
+
+@run_async
+async def test_clicking_a_different_header_starts_ascending(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.click(left.table, offset=(header_x(left.table, 1), 0))
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        await pilot.click(left.table, offset=(header_x(left.table, 2), 0))
+        await wait_for(pilot, lambda: left.sort_key == "time" and not left.loading)
+        assert left.sort_reverse is False
+
+
+@run_async
+async def test_header_indicator_tracks_a_click(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.click(left.table, offset=(header_x(left.table, 1), 0))
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        labels = header_labels(left)
+        assert labels[1] == f"Size {file_table.SORT_ARROWS[0]}"
+        assert all(
+            file_table.SORT_ARROWS[0] not in label
+            for index, label in enumerate(labels)
+            if index != 1
+        )
+
+
+@run_async
+async def test_header_indicator_tracks_keyboard_sort(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.press("s")  # name -> size
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        assert header_labels(left)[1] == f"Size {file_table.SORT_ARROWS[0]}"
+        await pilot.press("r")
+        await wait_for(pilot, lambda: left.sort_reverse and not left.loading)
+        assert header_labels(left)[1] == f"Size {file_table.SORT_ARROWS[1]}"
+
+
+@run_async
+async def test_sort_indicator_is_visible_without_interaction(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.press("s")
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        # No further interaction: the arrow is already in the rendered header.
+        assert f"Size {file_table.SORT_ARROWS[0]}" in header_labels(left)
 
 
 # -- AC6: hidden toggle ----------------------------------------------------

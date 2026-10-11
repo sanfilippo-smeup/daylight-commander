@@ -108,3 +108,24 @@ def test_dual_pane_filtered_snapshot(snap_compare: Callable[..., bool]) -> None:
         raise AssertionError("the filter did not narrow the rows")
 
     assert snap_compare(make_app(), terminal_size=TERMINAL_SIZE, run_before=filter_then_wait)
+
+
+def test_sort_indicator_snapshot(snap_compare: Callable[..., bool]) -> None:
+    """The active sort column carries an arrow in the header (DC-009)."""
+
+    async def sort_by_size(pilot: Pilot) -> None:
+        page = pilot.app.query_one(FilesPage)
+        left = page.panel("left")
+        for _ in range(60):
+            if not left.loading and left.row_count:
+                break
+            await pilot.pause()
+        await pilot.press("s")  # name -> size
+        for _ in range(60):
+            if left.sort_key == "size" and not left.loading:
+                return
+            await pilot.pause()
+        raise AssertionError("the sort did not switch to size")
+
+    build_fixture()
+    assert snap_compare(make_app(), terminal_size=TERMINAL_SIZE, run_before=sort_by_size)
