@@ -414,6 +414,27 @@ class FilePanel(Vertical):
 
     # -- filtering and sorting ---------------------------------------------
 
+    def clear_filter(self) -> None:
+        """Drop this panel's filter-as-you-type state (FR-104).
+
+        The filter belongs to the directory it was typed in, so entering
+        another one starts unfiltered. Only this panel is reset; the other pane
+        keeps its own filter. The shared input -- which mirrors the active panel
+        -- is emptied too, so the next ``/`` starts from nothing.
+
+        The input is reset without letting ``Input.Changed`` reach
+        :meth:`FilesPage.on_filter_changed`: that would call ``set_filter("")``
+        and spawn a ``derive()`` worker while ``go_to`` is about to ``scan()``,
+        and the two worker threads race. The page suppresses the one change
+        message this reset produces; the panel's own ``filter_text`` is already
+        reset here, so nothing needs re-deriving.
+        """
+        self.filter_text = ""
+        page = self.page
+        if page.is_ready and page.active is self and page.filter_input.value:
+            page._suppress_filter_change = True
+            page.filter_input.value = ""
+
     def set_filter(self, text: str) -> None:
         """Narrow the visible rows to ``text``."""
         self.filter_text = text
@@ -432,10 +453,17 @@ class FilePanel(Vertical):
     # -- navigation --------------------------------------------------------
 
     def go_to(self, path: Path) -> None:
-        """Navigate this panel to ``path`` and reload it."""
+        """Navigate this panel to ``path`` and reload it.
+
+        Entering a directory drops the filter-as-you-type state (FR-104), so the
+        new listing starts unfiltered. Only this panel is reset: the other pane
+        keeps whatever filter it was showing.
+        """
         self.directory = Path(path)
         # Marks belong to the directory they were made in.
         self._selected.clear()
+        # So does the filter.
+        self.clear_filter()
         self.reload()
         self.post_message(LocationChanged(self.directory))
 
@@ -816,6 +844,9 @@ class FilesPage(Vertical):
         self._panels: dict[str, FilePanel] = {}
         #: The path the mounted viewer/properties view is showing, if any.
         self._view_target: Path | None = None
+        #: True while a ``clear_filter()`` reset of the shared input is in
+        #: flight; the one ``Input.Changed`` it produces must not re-derive.
+        self._suppress_filter_change = False
         super().__init__(id="files-page")
 
     # -- queries -----------------------------------------------------------
@@ -1335,6 +1366,13 @@ class FilesPage(Vertical):
     def on_filter_changed(self, event: Input.Changed) -> None:
         """Filter-as-you-type: narrow the rows of the active panel."""
         event.stop()
+        if self._suppress_filter_change:
+            # This change is the ``clear_filter()`` reset from a navigation:
+            # the panel's filter_text was already reset directly and reload()
+            # is scanning the new directory, so re-deriving here would only
+            # race that scan. Swallow the message and re-arm the handler.
+            self._suppress_filter_change = False
+            return
         self.active.set_filter(event.value)
 
     @on(Input.Submitted, "#files-filter")

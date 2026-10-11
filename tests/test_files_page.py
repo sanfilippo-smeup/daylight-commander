@@ -393,6 +393,116 @@ async def test_filter_clearing_restores_every_row(tree: Path, tmp_path: Path) ->
         assert left.row_count == total
 
 
+# -- DC-008: the filter clears on directory entry --------------------------
+
+
+@run_async
+async def test_entering_a_subdirectory_clears_the_filter(tree: Path, tmp_path: Path) -> None:
+    """AC1: entering a folder drops the filter so the new listing is whole."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.press("slash")
+        await pilot.press(*"do")
+        await wait_for(pilot, lambda: left.row_count == 1)
+        assert plain_names(left) == ["docs"]
+        await pilot.press("enter")  # confirm the filter, focus back on the table
+        await pilot.press("enter")  # enter the docs folder
+        await wait_for(pilot, lambda: left.directory == tree / "docs")
+        await settle(pilot, left)
+        assert left.filter_text == ""
+        assert page.filter_input.value == ""
+        assert plain_names(left) == ["..", "deep.md"]
+
+
+@run_async
+async def test_navigating_up_clears_the_filter(tree: Path, tmp_path: Path) -> None:
+    """AC2: ``backspace`` to the parent drops the filter too."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        left.go_to(tree / "docs")
+        await settle(pilot, left)
+        left.set_filter("deep")
+        await wait_for(pilot, lambda: left.row_count == 1)
+        assert plain_names(left) == ["deep.md"]
+        await pilot.press("backspace")
+        await wait_for(pilot, lambda: left.directory == tree)
+        await settle(pilot, left)
+        assert left.filter_text == ""
+        assert left.row_count == len(left.visible_entries)
+        assert "alpha.txt" in plain_names(left)
+
+
+@run_async
+async def test_cursor_movement_does_not_clear_the_filter(tree: Path, tmp_path: Path) -> None:
+    """AC3: moving the cursor is not a directory change and keeps the filter."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.press("slash")
+        await pilot.press("a")
+        await wait_for(pilot, lambda: left.row_count == 3)
+        assert left.filter_text == "a"
+        await pilot.press("enter")  # confirm the filter, focus back on the table
+        await pilot.press("down")
+        await pilot.pause()
+        assert left.directory == tree
+        assert left.filter_text == "a"
+        assert left.row_count == 3
+
+
+@run_async
+async def test_filter_starts_fresh_after_navigation_cleared_it(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC4: after the reset a new ``/`` filter is empty, not the old text."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        await pilot.press("slash")
+        await pilot.press(*"alpha")
+        await wait_for(pilot, lambda: left.row_count == 1)
+        await pilot.press("enter")  # confirm the filter, hide the input
+        left.go_to(tree / "docs")
+        await settle(pilot, left)
+        assert left.filter_text == ""
+        assert page.filter_input.value == ""
+        await pilot.press("slash")
+        assert page.filter_input.value == "", "the old filter text was kept"
+        await pilot.press(*"deep")
+        await wait_for(pilot, lambda: left.row_count == 1)
+        assert plain_names(left) == ["deep.md"]
+
+
+@run_async
+async def test_navigation_resets_only_the_navigating_panels_filter(
+    tree: Path, tmp_path: Path
+) -> None:
+    """The reset must not touch the other pane's own filter state."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left, right = page.panels
+        await settle(pilot, left)
+        left.set_filter("alpha")
+        right.set_filter("beta")
+        await pilot.pause()
+        left.go_to(tree / "docs")
+        await settle(pilot, left)
+        assert left.filter_text == ""
+        assert right.filter_text == "beta"
+
+
+
 @run_async
 async def test_typing_more_never_accumulates_rows(tree: Path, tmp_path: Path) -> None:
     app = make_app(tree, tmp_path / "config.json")
