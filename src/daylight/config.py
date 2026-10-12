@@ -27,28 +27,30 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "go_up": "backspace",
     "start_filter": "slash",
     "toggle_hidden": "ctrl+h",
-    "cycle_sort": "s",
-    "reverse_sort": "r",
+    # DC-012: operations live on F-keys and Ctrl/modified keys, never on a
+    # printable letter, so type-ahead (DC-007) can claim every letter key.
+    "cycle_sort": "ctrl+s",
+    "reverse_sort": "ctrl+r",
     "toggle_select": "space",
     "select_all": "ctrl+a",
-    "clear_selection": "a",
+    "clear_selection": "ctrl+shift+a",
     "copy_to_other": "f5",
     "move_to_other": "f6",
     "new_directory": "f7",
-    "new_file": "f8",
-    "rename": "n",
-    "delete": "d",
-    "delete_permanent": "D",
-    "view": "v",
-    "properties": "i",
-    "edit": "e",
-    "copy_property": "c",
-    "next_match": "N",
+    "new_file": "shift+f7",
+    "rename": "shift+f6",
+    "delete": "f8",
+    "delete_permanent": "shift+f8",
+    "view": "f3",
+    "properties": "alt+enter",
+    "edit": "f4",
+    "copy_property": "ctrl+c",
+    "next_match": "ctrl+g",
     "search_viewer": "ctrl+f",
     "close_viewer": "escape",
-    # External launches (DC-006). ``o`` opens a URL found in the entry under the
+    # External launches (DC-006). ``f9`` opens a URL found in the entry under the
     # cursor with the default browser, always behind a confirmation (FR-402).
-    "open_link": "o",
+    "open_link": "f9",
 }
 
 #: Kind -> display symbol.

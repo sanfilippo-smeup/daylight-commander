@@ -125,13 +125,13 @@ def viewer_step(name: str) -> Callable[[Pilot], object]:
 
 
 def test_viewer_markdown_snapshot(snap_compare: Callable[..., bool]) -> None:
-    """``v`` on a Markdown file: rendered in the inactive pane, no screen pushed."""
+    """``f3`` on a Markdown file: rendered in the inactive pane, no screen pushed."""
     build_fixture()
     assert snap_compare(make_app(), terminal_size=TERMINAL_SIZE, run_before=viewer_step("doc.md"))
 
 
 def test_viewer_json_snapshot(snap_compare: Callable[..., bool]) -> None:
-    """``v`` on JSON: pretty-printed, numbered, in the inactive pane."""
+    """``f3`` on JSON: pretty-printed, numbered, in the inactive pane."""
     build_fixture()
     assert snap_compare(
         make_app(), terminal_size=TERMINAL_SIZE, run_before=viewer_step("data.json")
@@ -139,7 +139,7 @@ def test_viewer_json_snapshot(snap_compare: Callable[..., bool]) -> None:
 
 
 def test_viewer_text_window_snapshot(snap_compare: Callable[..., bool]) -> None:
-    """``v`` on plain text: one numbered window, scrolled two screens in."""
+    """``f3`` on plain text: one numbered window, scrolled two screens in."""
 
     async def run(pilot: Pilot) -> None:
         await viewer_step("code.py")(pilot)

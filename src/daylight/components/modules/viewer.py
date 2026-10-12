@@ -3,9 +3,9 @@
 The viewer is mounted into the *inactive* panel's mount point by the Files page
 (ADR-010) and is never pushed as a screen, so it can never take the whole
 terminal -- and it is deliberately not focusable: the keyboard stays in the
-listing, and the page's viewer keys (``ctrl+up``/``ctrl+down``/``ctrl+f``/``N``)
+listing, and the page's viewer keys (``ctrl+up``/``ctrl+down``/``ctrl+f``/``ctrl+g``)
 drive this widget from there. That is also why reading a file cannot make a stray
-``d`` delete it.
+``f8`` delete it.
 
 Everything the viewer shows is decided by :mod:`daylight.managers.content` and
 fetched through :class:`daylight.managers.FileManager`, so no disk access happens

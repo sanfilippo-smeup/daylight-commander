@@ -2,7 +2,7 @@
 
 These drive the app through Textual's pilot, so they cover the wiring the unit
 tests cannot: ``space`` marks rows, a batch command acts on every marked row,
-``d`` refuses to delete anything before the confirmation modal is answered, and
+``f8`` refuses to delete anything before the confirmation modal is answered, and
 a long copy runs in a worker thread with a Cancel that the event loop keeps
 answering while the work goes on.
 """
@@ -27,6 +27,7 @@ from textual.widgets import Button, Input, ProgressBar
 
 from daylight.app import DaylightApp
 from daylight.components.modules.file_list import FilePanel, FilesPage
+from daylight.config import DEFAULT_KEYBINDINGS
 from daylight.managers import ConfigManager, FileManager
 from daylight.models import AppConfig
 from daylight.modals import ConfirmScreen, FormScreen, ProgressScreen
@@ -63,7 +64,7 @@ def tree(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The trash directory the test owns, so ``d`` never touches the real one.
+    """The trash directory the test owns, so ``f8`` never touches the real one.
 
     It is the directory the running platform actually drops items into: the
     flat macOS ``~/.Trash`` or the freedesktop ``files/`` below it.
@@ -306,7 +307,7 @@ async def test_select_all_and_clear_selection(tree: Path) -> None:
         await pilot.press("ctrl+a")
         assert left.selected_count == len(plain_names(left)) - 1, "``..`` is never marked"
         assert "4 items selected" in left.breadcrumb_text()
-        await pilot.press("a")
+        await pilot.press("ctrl+shift+a")
         assert left.selected_count == 0
 
 
@@ -317,7 +318,7 @@ async def test_marks_survive_a_re_sort_but_not_a_navigation(tree: Path) -> None:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
         await pilot.press("space")
-        await pilot.press("s")
+        await pilot.press("ctrl+s")
         await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
         assert left.selected_count == 1, "a re-sort is the same directory"
         cursor_on(left, "docs")
@@ -348,8 +349,47 @@ async def test_the_filter_keeps_its_own_letters(tree: Path) -> None:
         await pilot.press("slash")
         assert isinstance(app.focused, Input)
         await pilot.press("d")
-        assert left.filter_text == "d", "``d`` types a d, it must not open a delete"
+        assert left.filter_text == "d", "``d`` types a d, it must not fire an operation"
         assert no_modal(app), "no modal opened while typing in the filter"
+
+
+# -- DC-012: no operation sits on a printable letter -------------------------
+
+
+#: The actions DC-012 remapped and the key each must now carry.
+DC012_OPERATION_KEYS = {
+    "view": "f3",
+    "edit": "f4",
+    "copy_to_other": "f5",
+    "move_to_other": "f6",
+    "new_directory": "f7",
+    "new_file": "shift+f7",
+    "rename": "shift+f6",
+    "delete": "f8",
+    "delete_permanent": "shift+f8",
+    "open_link": "f9",
+    "properties": "alt+enter",
+    "cycle_sort": "ctrl+s",
+    "reverse_sort": "ctrl+r",
+    "clear_selection": "ctrl+shift+a",
+    "copy_property": "ctrl+c",
+    "next_match": "ctrl+g",
+}
+
+#: The single printable letters the remap retired from the operation surface.
+RETIRED_LETTER_KEYS = frozenset("vednDosriacN")
+
+
+def test_no_operation_is_bound_to_a_printable_letter() -> None:
+    """AC1/AC2: every operation key is an F-key or a ``ctrl+``/``shift+``/``alt+``
+    chord, and no retired single letter survives in either binding layer."""
+    page_keys = {binding.action: binding.key for binding in FilesPage.BINDINGS}
+    for action, key in DC012_OPERATION_KEYS.items():
+        assert page_keys[action] == key, f"{action} should be on {key!r}"
+        assert DEFAULT_KEYBINDINGS[action] == key, f"config.py disagrees on {action}"
+    assert not (set(page_keys.values()) & RETIRED_LETTER_KEYS), "a retired letter survived"
+    for key in page_keys.values():
+        assert len(key) > 1, f"{key!r} is a single printable letter"
 
 
 # -- AC2: nothing destructive happens before the confirmation ----------------
@@ -361,7 +401,7 @@ async def test_delete_asks_first_and_the_escape_deletes_nothing(tree: Path, tras
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("d")
+        await pilot.press("f8")
         await pilot.pause()
         assert isinstance(app.screen, ConfirmScreen)
         assert "alpha.txt" in app.screen.message
@@ -378,7 +418,7 @@ async def test_the_confirmation_no_button_deletes_nothing(tree: Path, trash: Pat
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("d")
+        await pilot.press("f8")
         await wait_for(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         app.screen.query_one("#confirm-no", Button).press()
         await pilot.pause()
@@ -392,7 +432,7 @@ async def test_the_n_key_also_means_no(tree: Path, trash: Path) -> None:
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("d")
+        await pilot.press("f8")
         await wait_for(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         await pilot.press("n")
         await pilot.pause()
@@ -405,7 +445,7 @@ async def test_confirming_a_delete_sends_the_file_to_the_trash(tree: Path, trash
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("d")
+        await pilot.press("f8")
         await wait_for(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         await pilot.press("y")
         await wait_for(pilot, lambda: not (tree / "alpha.txt").exists())
@@ -424,7 +464,7 @@ async def test_a_confirmed_batch_delete_names_everything_it_will_take(
         for name in ("alpha.txt", "beta.txt", "gamma.txt"):
             cursor_on(left, name)
             await pilot.press("space")
-        await pilot.press("d")
+        await pilot.press("f8")
         await wait_for(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         assert "3 items" in app.screen.message
         for name in ("alpha.txt", "beta.txt", "gamma.txt"):
@@ -445,7 +485,7 @@ async def test_permanent_delete_is_a_separate_key_and_says_so(tree: Path, trash:
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("D")
+        await pilot.press("shift+f8")
         await wait_for(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         assert app.screen.dialog_title == "Permanently delete"
         assert "cannot be undone" in app.screen.message
@@ -458,11 +498,11 @@ async def test_permanent_delete_is_a_separate_key_and_says_so(tree: Path, trash:
 
 
 @run_async
-async def test_f8_creates_a_file_through_the_form(tree: Path) -> None:
+async def test_new_file_key_creates_a_file_through_the_form(tree: Path) -> None:
     app = make_app(tree)
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
-        await pilot.press("f8")
+        await pilot.press("shift+f7")
         await wait_for(pilot, lambda: isinstance(app.screen, FormScreen))
         assert app.screen.form.name == "new_file"
         await pilot.press(*"notes.md")
@@ -490,7 +530,7 @@ async def test_a_cancelled_form_creates_nothing(tree: Path) -> None:
     app = make_app(tree)
     async with app.run_test(size=SIZE) as pilot:
         _, _ = await panes_ready(app, pilot)
-        await pilot.press("f8")
+        await pilot.press("shift+f7")
         await wait_for(pilot, lambda: isinstance(app.screen, FormScreen))
         await pilot.press(*"notes.md")
         await pilot.press("escape")
@@ -503,7 +543,7 @@ async def test_an_empty_name_never_reaches_the_disk(tree: Path) -> None:
     app = make_app(tree)
     async with app.run_test(size=SIZE) as pilot:
         _, _ = await panes_ready(app, pilot)
-        await pilot.press("f8")
+        await pilot.press("shift+f7")
         await wait_for(pilot, lambda: isinstance(app.screen, FormScreen))
         await pilot.press("enter")
         await pilot.pause()
@@ -518,12 +558,12 @@ async def test_an_empty_name_never_reaches_the_disk(tree: Path) -> None:
 
 
 @run_async
-async def test_n_renames_the_entry_under_the_cursor(tree: Path) -> None:
+async def test_rename_key_renames_the_entry_under_the_cursor(tree: Path) -> None:
     app = make_app(tree)
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("n")
+        await pilot.press("shift+f6")
         await wait_for(pilot, lambda: isinstance(app.screen, FormScreen))
         assert app.screen.form.name == "rename"
         assert app.screen.values() == {"name": "alpha.txt"}, "the form is prefilled"
@@ -542,7 +582,7 @@ async def test_a_rename_onto_an_existing_name_is_refused(tree: Path) -> None:
     async with app.run_test(size=SIZE) as pilot:
         left, _ = await panes_ready(app, pilot)
         cursor_on(left, "alpha.txt")
-        await pilot.press("n")
+        await pilot.press("shift+f6")
         await wait_for(pilot, lambda: isinstance(app.screen, FormScreen))
         for _ in range(len("alpha.txt")):
             await pilot.press("backspace")
@@ -561,7 +601,7 @@ async def test_rename_does_nothing_on_the_dot_dot_row(tree: Path) -> None:
         left, _ = await panes_ready(app, pilot)
         left.table.cursor_coordinate = Coordinate(0, 0)
         await pilot.pause()
-        await pilot.press("n")
+        await pilot.press("shift+f6")
         await pilot.pause()
         assert no_modal(app), "there is nothing to rename on ``..``"
 

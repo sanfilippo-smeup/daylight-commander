@@ -530,7 +530,7 @@ async def test_sort_cycles_through_name_size_time_type(tree: Path, tmp_path: Pat
         await settle(pilot, left)
         assert left.sort_key == "name"
         for expected in ("size", "time", "type", "name"):
-            await pilot.press("s")
+            await pilot.press("ctrl+s")
             await pilot.pause()
             assert left.sort_key == expected
 
@@ -542,7 +542,7 @@ async def test_sort_by_size_reorders_rows(tree: Path, tmp_path: Path) -> None:
         page = app.query_one(FilesPage)
         left = page.panel("left")
         await settle(pilot, left)
-        await pilot.press("s")
+        await pilot.press("ctrl+s")
         await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
         assert plain_names(left)[0] == ".."
         sizes = [entry.size for entry in left.visible_entries if not entry.is_dir]
@@ -556,7 +556,7 @@ async def test_sort_by_type_reorders_rows(tree: Path, tmp_path: Path) -> None:
         page = app.query_one(FilesPage)
         left = page.panel("left")
         await settle(pilot, left)
-        await pilot.press("s", "s", "s")
+        await pilot.press("ctrl+s", "ctrl+s", "ctrl+s")
         await wait_for(pilot, lambda: left.sort_key == "type" and not left.loading)
         labels = [entry.suffix for entry in left.visible_entries if not entry.is_dir]
         assert labels == sorted(labels)
@@ -570,7 +570,7 @@ async def test_reverse_sort_flips_the_order(tree: Path, tmp_path: Path) -> None:
         left = page.panel("left")
         await settle(pilot, left)
         before = plain_names(left)
-        await pilot.press("r")
+        await pilot.press("ctrl+r")
         await wait_for(pilot, lambda: left.sort_reverse and not left.loading)
         assert plain_names(left)[0] == ".."
         assert plain_names(left)[1:] == before[:0:-1]
@@ -659,10 +659,10 @@ async def test_header_indicator_tracks_keyboard_sort(tree: Path, tmp_path: Path)
         page = app.query_one(FilesPage)
         left = page.panel("left")
         await settle(pilot, left)
-        await pilot.press("s")  # name -> size
+        await pilot.press("ctrl+s")  # name -> size
         await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
         assert header_labels(left)[1] == f"Size {file_table.SORT_ARROWS[0]}"
-        await pilot.press("r")
+        await pilot.press("ctrl+r")
         await wait_for(pilot, lambda: left.sort_reverse and not left.loading)
         assert header_labels(left)[1] == f"Size {file_table.SORT_ARROWS[1]}"
 
@@ -674,7 +674,7 @@ async def test_sort_indicator_is_visible_without_interaction(tree: Path, tmp_pat
         page = app.query_one(FilesPage)
         left = page.panel("left")
         await settle(pilot, left)
-        await pilot.press("s")
+        await pilot.press("ctrl+s")
         await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
         # No further interaction: the arrow is already in the rendered header.
         assert f"Size {file_table.SORT_ARROWS[0]}" in header_labels(left)

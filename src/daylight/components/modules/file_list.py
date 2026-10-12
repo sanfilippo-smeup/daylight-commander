@@ -29,7 +29,7 @@ and nothing is ever pushed fullscreen. A binary file is never rendered inline,
 and neither it nor a URL is ever launched without asking first (DC-006): every
 hand-off to another application goes through :meth:`FilesPage.prompt_launch` and
 a :class:`~daylight.modals.LaunchScreen` that names the target and the
-application (FR-403). ``e`` still hands text to ``$EDITOR`` -- that runs in this
+application (FR-403). ``f4`` still hands text to ``$EDITOR`` -- that runs in this
 terminal, so it is not an external launch.
 """
 
@@ -430,7 +430,7 @@ class FilePanel(Vertical):
         if self._selected:
             self._selected.intersection_update(entry.path for entry in visible)
         self._listing = False
-        # The sort may have changed (a header click, ``s``/``r``), so the
+        # The sort may have changed (a header click, ``ctrl+s``/``ctrl+r``), so the
         # header indicator is refreshed before the rows are rebuilt.
         self._sync_headers()
         # A new listing replaces the rows behind the same window bounds (a
@@ -887,28 +887,30 @@ class FilesPage(Vertical):
         Binding("backspace", "go_up", "Up", show=True, id="go_up"),
         Binding("slash", "start_filter", "Filter", show=True, id="start_filter"),
         Binding("ctrl+h", "toggle_hidden", "Hidden", show=True, id="toggle_hidden"),
-        Binding("s", "cycle_sort", "Sort", show=True, id="cycle_sort"),
-        Binding("r", "reverse_sort", "Reverse", show=True, id="reverse_sort"),
+        # DC-012: the operation keys are F-keys or Ctrl/modified keys, never a
+        # printable letter, so type-ahead (DC-007) can claim every letter key.
+        Binding("ctrl+s", "cycle_sort", "Sort", show=True, id="cycle_sort"),
+        Binding("ctrl+r", "reverse_sort", "Reverse", show=True, id="reverse_sort"),
         # The operation keys are deliberately hidden from the footer: the bar
         # already runs out of room at 120 columns, and the navigation keys that
         # were there first are the ones a new user needs to see.
         Binding("space", "toggle_select", "Select", show=False, id="toggle_select"),
         Binding("ctrl+a", "select_all", "Select all", show=False, id="select_all"),
-        Binding("a", "clear_selection", "Select none", show=False, id="clear_selection"),
+        Binding("ctrl+shift+a", "clear_selection", "Select none", show=False, id="clear_selection"),
         Binding("f5", "copy_to_other", "Copy", show=False, id="copy_to_other"),
         Binding("f6", "move_to_other", "Move", show=False, id="move_to_other"),
         Binding("f7", "new_directory", "New dir", show=False, id="new_directory"),
-        Binding("f8", "new_file", "New file", show=False, id="new_file"),
-        Binding("n", "rename", "Rename", show=False, id="rename"),
-        Binding("d", "delete", "Delete", show=False, id="delete"),
-        Binding("D", "delete_permanent", "Wipe", show=False, id="delete_permanent"),
+        Binding("shift+f7", "new_file", "New file", show=False, id="new_file"),
+        Binding("shift+f6", "rename", "Rename", show=False, id="rename"),
+        Binding("f8", "delete", "Delete", show=False, id="delete"),
+        Binding("shift+f8", "delete_permanent", "Wipe", show=False, id="delete_permanent"),
         # Viewing keys. Hidden from the footer for the same reason as the
         # operation keys above; the viewer header repeats them while one is open.
-        Binding("v", "view", "View", show=False, id="view"),
-        Binding("i", "properties", "Info", show=False, id="properties"),
-        Binding("e", "edit", "Edit", show=False, id="edit"),
-        Binding("c", "copy_property", "Copy field", show=False, id="copy_property"),
-        Binding("N", "next_match", "Next match", show=False, id="next_match"),
+        Binding("f3", "view", "View", show=False, id="view"),
+        Binding("alt+enter", "properties", "Info", show=False, id="properties"),
+        Binding("f4", "edit", "Edit", show=False, id="edit"),
+        Binding("ctrl+c", "copy_property", "Copy field", show=False, id="copy_property"),
+        Binding("ctrl+g", "next_match", "Next match", show=False, id="next_match"),
         Binding("ctrl+f", "search_viewer", "Find", show=False, id="search_viewer"),
         Binding("ctrl+up", "viewer_up", "Viewer up", show=False, id="viewer_up"),
         Binding("ctrl+down", "viewer_down", "Viewer down", show=False, id="viewer_down"),
@@ -924,8 +926,8 @@ class FilesPage(Vertical):
         # DC-010: the tabsheet tabs are switchable from the keyboard (AC6).
         Binding("ctrl+left", "previous_tab", "Prev tab", show=False, id="previous_tab"),
         Binding("ctrl+right", "next_tab", "Next tab", show=False, id="next_tab"),
-        # DC-006: ``o`` asks for a URL and confirms it before the browser opens.
-        Binding("o", "open_link", "Link", show=False, id="open_link"),
+        # DC-006: ``f9`` asks for a URL and confirms it before the browser opens.
+        Binding("f9", "open_link", "Link", show=False, id="open_link"),
     ]
 
     active_panel: var[str] = var(PANEL_NAMES[0], init=False)
@@ -1074,12 +1076,12 @@ class FilesPage(Vertical):
             self.show_filter()
 
     def action_cycle_sort(self) -> None:
-        """``s``: cycle the active panel through name/size/time/type sorting."""
+        """``ctrl+s``: cycle the active panel through name/size/time/type sorting."""
         if not self._filter_has_focus():
             self.active.cycle_sort()
 
     def action_reverse_sort(self) -> None:
-        """``r``: reverse the active panel's current sort."""
+        """``ctrl+r``: reverse the active panel's current sort."""
         if not self._filter_has_focus():
             self.active.reverse_sort()
 
@@ -1103,7 +1105,7 @@ class FilesPage(Vertical):
             self.active.select_all()
 
     def action_clear_selection(self) -> None:
-        """``a``: unmark everything in the active panel."""
+        """``ctrl+shift+a``: unmark everything in the active panel."""
         if not self._filter_has_focus():
             self.active.clear_selection()
 
@@ -1125,22 +1127,22 @@ class FilesPage(Vertical):
             self.active.prompt_create(is_dir=True)
 
     def action_new_file(self) -> None:
-        """``f8``: create a file in the active panel."""
+        """``shift+f7``: create a file in the active panel."""
         if not self._filter_has_focus():
             self.active.prompt_create(is_dir=False)
 
     def action_rename(self) -> None:
-        """``n``: rename the entry under the active panel's cursor."""
+        """``shift+f6``: rename the entry under the active panel's cursor."""
         if not self._filter_has_focus():
             self.active.prompt_rename()
 
     def action_delete(self) -> None:
-        """``d``: confirm, then move the targets to the OS trash."""
+        """``f8``: confirm, then move the targets to the OS trash."""
         if not self._filter_has_focus():
             self.active.prompt_delete(permanent=False)
 
     def action_delete_permanent(self) -> None:
-        """``D``: confirm, then delete the targets for good, bypassing the trash."""
+        """``shift+f8``: confirm, then delete the targets for good, bypassing the trash."""
         if not self._filter_has_focus():
             self.active.prompt_delete(permanent=True)
 
@@ -1245,7 +1247,7 @@ class FilesPage(Vertical):
         otherwise the viewer would still show the file as it was before the edit.
 
         An edit that hands the file to *another application* is a launch, so it
-        confirms first (DC-006, FR-403): ``e`` on a PDF asks before the PDF
+        confirms first (DC-006, FR-403): ``f4`` on a PDF asks before the PDF
         viewer opens. ``$EDITOR`` runs inside this terminal, so it is not an
         external hand-off and needs no confirmation.
         """
@@ -1376,17 +1378,17 @@ class FilesPage(Vertical):
                 body.scroll_up(animate=False)
 
     def action_view(self) -> None:
-        """``v``: open the internal viewer in the inactive panel."""
+        """``f3``: open the internal viewer in the inactive panel."""
         if not self._filter_has_focus():
             self.open_view()
 
     def action_properties(self) -> None:
-        """``i``: open the properties view in the inactive panel."""
+        """``alt+enter``: open the properties view in the inactive panel."""
         if not self._filter_has_focus():
             self.open_properties()
 
     def action_edit(self) -> None:
-        """``e``: edit the cursor entry by type (``$EDITOR`` or the OS app)."""
+        """``f4``: edit the cursor entry by type (``$EDITOR`` or the OS app)."""
         if not self._filter_has_focus():
             self.edit_target()
 
@@ -1434,14 +1436,14 @@ class FilesPage(Vertical):
                 viewer.open_search()
 
     def action_next_match(self) -> None:
-        """``N``: jump to the next search match in the viewer."""
+        """``ctrl+g``: jump to the next search match in the viewer."""
         if not self._filter_has_focus():
             viewer = self.viewer
             if viewer is not None:
                 viewer.next_hit()
 
     def action_open_link(self) -> None:
-        """``o``: open a URL with the default browser, after a confirmation.
+        """``f9``: open a URL with the default browser, after a confirmation.
 
         A file under the cursor that holds a URL is offered it directly; with
         nothing under the cursor the URL is asked for first. Either way the
@@ -1452,7 +1454,7 @@ class FilesPage(Vertical):
         self.prompt_link(self.link_under_cursor())
 
     def action_copy_property(self) -> None:
-        """``c``: copy the value under the cursor in the properties view."""
+        """``ctrl+c``: copy the value under the cursor in the properties view."""
         if self._filter_has_focus():
             return
         view = self.properties_view

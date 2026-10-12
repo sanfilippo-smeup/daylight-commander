@@ -4,7 +4,7 @@ The manager side of the viewer lives in ``test_viewer_content.py``; these drive
 the real app through Textual's pilot to cover the page contract: the viewer and
 the properties table go into the *inactive* pane and are never pushed as a
 screen, each file type gets the body it should, search and navigation move
-inside a file, a binary file leaves for the OS, and ``e`` edits by type.
+inside a file, a binary file leaves for the OS, and ``f4`` edits by type.
 """
 
 from __future__ import annotations
@@ -472,11 +472,11 @@ async def test_declining_the_confirmation_opens_nothing(
         assert page.viewer is None
 
 
-# -- AC1: ``o`` opens a URL in the browser, after a confirmation ------------
+# -- AC1: ``f9`` opens a URL in the browser, after a confirmation ------------
 
 
 @run_async
-async def test_o_offers_the_url_in_the_file_under_the_cursor(
+async def test_open_link_offers_the_url_in_the_file_under_the_cursor(
     tree: Path, tmp_path: Path
 ) -> None:
     """DC-006/FR-402: the link in the file is detected and offered for confirmation."""
@@ -490,7 +490,7 @@ async def test_o_offers_the_url_in_the_file_under_the_cursor(
         page.active.move_cursor(row_index(page.active, "bookmark.txt"))
         assert page.link_under_cursor() == "https://example.com/docs"
 
-        await pilot.press("o")
+        await pilot.press("f9")
         await pilot.pause()
         assert launched == []
         screen = app.screen
@@ -502,7 +502,7 @@ async def test_o_offers_the_url_in_the_file_under_the_cursor(
 
 
 @run_async
-async def test_o_on_a_file_without_a_link_asks_for_a_url(
+async def test_open_link_on_a_file_without_a_link_asks_for_a_url(
     tree: Path, tmp_path: Path
 ) -> None:
     """With nothing to offer, the URL is asked for and then still confirmed."""
@@ -514,7 +514,7 @@ async def test_o_on_a_file_without_a_link_asks_for_a_url(
         await settle(pilot, page, row_count(tree))
         page.active.move_cursor(row_index(page.active, "code.py"))
 
-        await pilot.press("o")
+        await pilot.press("f9")
         await pilot.pause()
         assert app.screen.__class__.__name__ == "FormScreen"
         field = app.screen.query_one("Input")
@@ -543,7 +543,7 @@ async def test_a_typed_url_that_is_not_a_url_is_refused(
         await settle(pilot, page, row_count(tree))
         page.active.move_cursor(row_index(page.active, "code.py"))
 
-        await pilot.press("o")
+        await pilot.press("f9")
         await pilot.pause()
         field = app.screen.query_one("Input")
         field.value = "file:///etc/passwd"
@@ -554,10 +554,10 @@ async def test_a_typed_url_that_is_not_a_url_is_refused(
 
 
 @run_async
-async def test_e_on_a_binary_file_confirms_before_the_os_takes_it(
+async def test_edit_on_a_binary_file_confirms_before_the_os_takes_it(
     tree: Path, tmp_path: Path
 ) -> None:
-    """AC1: ``e`` on a non-text file is a launch, so it asks first."""
+    """AC1: ``f4`` on a non-text file is a launch, so it asks first."""
     app = make_app(tree, tmp_path / "config.json")
     launched: list[Path] = []
     app.file_manager.launch = lambda request: launched.append(Path(request.target)) or 0  # type: ignore[method-assign]
@@ -575,7 +575,7 @@ async def test_e_on_a_binary_file_confirms_before_the_os_takes_it(
 
 
 @run_async
-async def test_e_on_a_text_file_still_runs_the_editor_without_asking(
+async def test_edit_on_a_text_file_still_runs_the_editor_without_asking(
     tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``$EDITOR`` runs in this terminal: not a launch, so no modal (FR-403)."""

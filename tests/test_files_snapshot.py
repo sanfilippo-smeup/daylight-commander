@@ -146,7 +146,7 @@ def test_sort_indicator_snapshot(snap_compare: Callable[..., bool]) -> None:
             if not left.loading and left.row_count:
                 break
             await pilot.pause()
-        await pilot.press("s")  # name -> size
+        await pilot.press("ctrl+s")  # name -> size
         for _ in range(60):
             if left.sort_key == "size" and not left.loading:
                 return

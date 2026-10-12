@@ -86,7 +86,7 @@ async def open_a_file_then_wait(pilot: Pilot) -> None:
         await pilot.pause()
     else:
         raise AssertionError("notes.md never came under the cursor")
-    await pilot.press("v")
+    await pilot.press("f3")
     for _ in range(60):
         if pilot.app.view_target() is not None:
             return

@@ -183,7 +183,7 @@ class DaylightApp(App[None]):
         """What the Viewers and Properties tabs show.
 
         The file last opened in a panel wins, so switching to the Viewers tab
-        after ``v`` shows that file; otherwise it follows the listing cursor.
+        after ``f3`` shows that file; otherwise it follows the listing cursor.
         """
         files = self.files_page
         if files is None or not files.is_ready:
