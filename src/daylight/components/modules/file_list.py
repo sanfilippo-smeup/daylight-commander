@@ -270,8 +270,14 @@ class FilePanel(Vertical):
         is how the viewer stays in the pane (AC1) instead of covering the
         terminal. Opening a file also reveals the Viewer tab and brings it to
         the front (DC-010, AC4).
+
+        The existing viewer is emptied *without* hiding the tab: hiding the tab
+        we are about to re-show would make ``Tabs.hide`` auto-select the Directory
+        tab and queue a ``TabActivated`` that lands after this method returns,
+        flipping the panel back to Directory (DC-015). :meth:`clear_viewer` is
+        what hides the tab, and only when the viewer is actually closed.
         """
-        self.clear_viewer()
+        self._empty_mount()
         self._mount_point.mount(widget)
         self._mount_point.add_class("visible")
         self._tabs.show_tab(self._viewer_pane.id or "")
@@ -279,11 +285,20 @@ class FilePanel(Vertical):
 
     def clear_viewer(self) -> None:
         """Empty the mount point, hide the Viewer tab and return to Directory."""
+        self._empty_mount()
+        if self.is_mounted:
+            self._tabs.hide_tab(self._viewer_pane.id or "")
+
+    def _empty_mount(self) -> None:
+        """Empty the mount point without touching the tabsheet.
+
+        Split out of :meth:`clear_viewer` so :meth:`mount_viewer` can replace a
+        viewer's content without hiding (and so without re-selecting Directory,
+        then racing back to Viewer) the tab that holds it.
+        """
         if self._mount_point.children:
             self._mount_point.remove_children()
         self._mount_point.remove_class("visible")
-        if self.is_mounted:
-            self._tabs.hide_tab(self._viewer_pane.id or "")
 
     def previous_tab(self) -> None:
         """Move this panel's tabsheet one tab back (keyboard switching, DC-010)."""
@@ -1354,9 +1369,10 @@ class FilesPage(Vertical):
         if kind == "binary":
             self.prompt_launch(self.manager.describe_open(entry.path))
             return None
-        self.clear_viewers()
+        target = self.inactive
+        self._clear_other_viewers(target)
         self._view_target = entry.path
-        self.inactive.mount_viewer(ViewerPanel(entry.path, manager=self.manager, kind=kind))
+        target.mount_viewer(ViewerPanel(entry.path, manager=self.manager, kind=kind))
         return entry.path
 
     def open_properties(self) -> Path | None:
@@ -1364,9 +1380,10 @@ class FilesPage(Vertical):
         entry = self.target_entry()
         if entry is None:
             return None
-        self.clear_viewers()
+        target = self.inactive
+        self._clear_other_viewers(target)
         self._view_target = entry.path
-        self.inactive.mount_viewer(PropertiesView(entry.path, manager=self.manager))
+        target.mount_viewer(PropertiesView(entry.path, manager=self.manager))
         return entry.path
 
     def clear_viewers(self) -> None:
@@ -1374,6 +1391,19 @@ class FilesPage(Vertical):
         for panel in self.panels:
             panel.clear_viewer()
         self._view_target = None
+
+    def _clear_other_viewers(self, keep: FilePanel) -> None:
+        """Empty every mount point except ``keep``'s, so only one viewer survives.
+
+        Opening a view clears the *other* pane so a viewer left behind by an
+        active-panel switch cannot stay on screen; the target pane's own viewer
+        is replaced by :meth:`FilePanel.mount_viewer`. Clearing the target through
+        :meth:`clear_viewers` instead would hide the Viewer tab and race the new
+        one back to Directory (DC-015).
+        """
+        for panel in self.panels:
+            if panel is not keep:
+                panel.clear_viewer()
 
     def edit_target(self) -> None:
         """Edit the entry under the cursor by type (AC5, FR-304).

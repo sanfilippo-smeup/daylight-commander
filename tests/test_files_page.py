@@ -861,6 +861,53 @@ async def test_a_binary_file_never_opens_a_viewer_tab(
         assert page.viewer is None
 
 
+# -- DC-015: the viewer stays put while the listing is browsed -------------
+
+
+@run_async
+async def test_browsing_and_reopening_never_moves_a_panel_off_its_tab(
+    tree: Path, tmp_path: Path
+) -> None:
+    """DC-015: an open viewer keeps its tab and the listing keeps the keyboard.
+
+    Two things must never move once a viewer is open: the viewer pane's active
+    tab (it stays ``viewer-right``, so the preview stays visible) and the
+    keyboard (it stays on the active pane's listing, so the arrow keys keep
+    moving the cursor). The second :meth:`FilesPage.open_view` is the reported
+    trigger: re-mounting a viewer used to hide the *active* Viewer tab, and
+    Textual's ``Tabs.hide`` then queued a Directory activation that landed after
+    the new tab was shown, leaving the panel on Directory until Enter again.
+    """
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        right = page.panel("right")
+        await settle(pilot, left)
+        await open_viewer_at(pilot, page, "alpha.txt")
+        assert right.tabs.active == "viewer-right"
+        assert right.viewer_tab_visible is True
+
+        start = left.cursor_index
+        for key in ("down", "down", "up", "pageup", "pagedown"):
+            await pilot.press(key)
+            await pilot.pause()
+            assert left.tabs.active == "directory-left"
+            assert right.tabs.active == "viewer-right"
+            assert right.viewer_tab_visible is True
+            assert app.focused is left.table
+        assert left.cursor_index != start, "the arrow keys stopped driving the cursor"
+
+        # Opening another file is the trigger of the reported defect.
+        await open_viewer_at(pilot, page, "beta.py")
+        assert left.tabs.active == "directory-left"
+        assert right.tabs.active == "viewer-right"
+        assert right.viewer_tab_visible is True
+        assert right.directory_tab.display is False
+        assert app.focused is left.table
+        assert page.viewer is not None
+
+
 # -- AC6: hidden toggle ----------------------------------------------------
 
 
