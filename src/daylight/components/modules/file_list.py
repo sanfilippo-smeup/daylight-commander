@@ -2,8 +2,11 @@
 
 One :class:`FilePanel` per side. Exactly one panel is active at a time
 (:attr:`FilesPage.active_panel`); the active panel is the focused one and is the
-only one that reacts to navigation, filter and sort keys. The inactive panel
-keeps a stable mount point (``.panel-mount``) for the internal viewer (ADR-010).
+only one that reacts to navigation, filter and sort keys. Each panel is a
+two-tab tabsheet (ADR-011): Tab 1 is the directory view (always visible) and
+Tab 2 is the file viewer, shown only when a text file is opened. The inactive
+panel keeps a stable mount point (``.panel-mount``) for the internal viewer,
+now inside the Viewer tab (ADR-010).
 
 The listing is virtualised (AC1). The directory is scanned, filtered and sorted
 in a worker thread, and the panel only ever hands the DataTable the rows that fit
@@ -43,7 +46,7 @@ from textual.events import MouseScrollDown, MouseScrollUp, Resize
 from textual.message import Message
 from textual.reactive import var
 from textual.widget import Widget
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import DataTable, Input, Static, TabbedContent, TabPane, Tabs
 
 from daylight.components import file_table
 from daylight.components.modules.properties_view import PropertiesView
@@ -106,7 +109,7 @@ class LocationChanged(Message):
 
 
 class FilePanel(Vertical):
-    """One side of the dual-pane layout: breadcrumb, table and viewer mount point."""
+    """One side of the dual-pane layout: a directory/viewer tabsheet (ADR-011)."""
 
     DEFAULT_CLASSES = "file-panel"
 
@@ -146,6 +149,11 @@ class FilePanel(Vertical):
         self._breadcrumb = Static("", id=f"breadcrumb-{name}", classes="breadcrumb")
         self._table = DataTable(id=f"table-{name}", cursor_type="row", zebra_stripes=True)
         self._mount_point = Container(id=f"mount-{name}", classes="panel-mount")
+        # The two-tab tabsheet (ADR-011): the directory tab is always visible,
+        # the viewer tab is hidden until a text file is opened (DC-010).
+        self._tabs = TabbedContent(initial=f"directory-{name}", id=f"tabs-{name}")
+        self._directory_pane = TabPane("Directory", id=f"directory-{name}")
+        self._viewer_pane = TabPane("Viewer", id=f"viewer-{name}")
         super().__init__(id=f"panel-{name}")
 
     # -- queries -----------------------------------------------------------
@@ -166,26 +174,60 @@ class FilePanel(Vertical):
         return self._mount_point
 
     @property
+    def tabs(self) -> TabbedContent:
+        """The two-tab tabsheet of this panel (directory + viewer, ADR-011)."""
+        return self._tabs
+
+    @property
+    def directory_tab(self) -> TabPane:
+        """The always-visible directory tab of this panel."""
+        return self._directory_pane
+
+    @property
+    def viewer_tab(self) -> TabPane:
+        """The conditional viewer tab of this panel."""
+        return self._viewer_pane
+
+    @property
+    def viewer_tab_visible(self) -> bool:
+        """True while the viewer tab is shown (a text file is open, DC-010)."""
+        return not self._tabs.get_tab(self._viewer_pane.id or "").has_class("-hidden")
+
+    @property
     def mounted_viewer(self) -> Widget | None:
         """The widget currently mounted in this panel's mount point, if any."""
         children = self._mount_point.children
         return children[0] if children else None
 
     def mount_viewer(self, widget: Widget) -> None:
-        """Show ``widget`` in this panel's mount point, replacing what was there.
+        """Show ``widget`` in this panel's Viewer tab, replacing what was there.
 
-        The mount point is a widget inside the panel, never a screen, which is how
-        the viewer stays in the pane (AC1) instead of covering the terminal.
+        The mount point is a widget inside the Viewer tab, never a screen, which
+        is how the viewer stays in the pane (AC1) instead of covering the
+        terminal. Opening a file also reveals the Viewer tab and brings it to
+        the front (DC-010, AC4).
         """
         self.clear_viewer()
         self._mount_point.mount(widget)
         self._mount_point.add_class("visible")
+        self._tabs.show_tab(self._viewer_pane.id or "")
+        self._tabs.active = self._viewer_pane.id or ""
 
     def clear_viewer(self) -> None:
-        """Empty the mount point and hide it again."""
+        """Empty the mount point, hide the Viewer tab and return to Directory."""
         if self._mount_point.children:
             self._mount_point.remove_children()
         self._mount_point.remove_class("visible")
+        if self.is_mounted:
+            self._tabs.hide_tab(self._viewer_pane.id or "")
+
+    def previous_tab(self) -> None:
+        """Move this panel's tabsheet one tab back (keyboard switching, DC-010)."""
+        self._tabs.query_one(Tabs).action_previous_tab()
+
+    def next_tab(self) -> None:
+        """Move this panel's tabsheet one tab forward (keyboard switching, DC-010)."""
+        self._tabs.query_one(Tabs).action_next_tab()
 
     @property
     def row_count(self) -> int:
@@ -275,10 +317,13 @@ class FilePanel(Vertical):
     # -- lifecycle ---------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        """Breadcrumb, listing table and the viewer mount point."""
-        yield self._breadcrumb
-        yield self._table
-        yield self._mount_point
+        """The tabsheet: a directory tab and a conditional viewer tab (ADR-011)."""
+        with self._tabs:
+            with self._directory_pane:
+                yield self._breadcrumb
+                yield self._table
+            with self._viewer_pane:
+                yield self._mount_point
 
     def focus_table(self) -> None:
         """Give the keyboard to this panel's table; a no-op before it is mounted."""
@@ -308,9 +353,14 @@ class FilePanel(Vertical):
         return True
 
     def on_mount(self) -> None:
-        """Declare the columns once, then kick off the first listing."""
+        """Declare the columns, hide the Viewer tab, then start the first listing.
+
+        The viewer tab stays hidden until a text file is opened (DC-010, AC3);
+        the directory tab is the one the panel opens on.
+        """
         self._sync_headers()
         self.reload()
+        self._tabs.hide_tab(self._viewer_pane.id or "")
 
     def _sync_headers(self) -> None:
         """Render the sort indicator into the column headers (ADR-012).
@@ -871,6 +921,9 @@ class FilesPage(Vertical):
             id="viewer_page_down",
         ),
         Binding("escape", "close_viewer", "Close viewer", show=False, id="close_viewer"),
+        # DC-010: the tabsheet tabs are switchable from the keyboard (AC6).
+        Binding("ctrl+left", "previous_tab", "Prev tab", show=False, id="previous_tab"),
+        Binding("ctrl+right", "next_tab", "Next tab", show=False, id="next_tab"),
         # DC-006: ``o`` asks for a URL and confirms it before the browser opens.
         Binding("o", "open_link", "Link", show=False, id="open_link"),
     ]
@@ -1351,6 +1404,27 @@ class FilesPage(Vertical):
             viewer.close_search()
             return
         self.clear_viewers()
+
+    def tab_panel(self) -> FilePanel:
+        """The panel whose tabsheet the tab keys move (DC-010, AC6).
+
+        The viewer lives in whichever pane holds it -- normally the inactive
+        one (ADR-010) -- so that is the tabsheet the keys switch. With no
+        viewer open the inactive pane is still the one a viewer would land in,
+        and switching its single visible tab is a harmless no-op.
+        """
+        name = self.viewer_pane
+        return self.panel(name) if name else self.inactive
+
+    def action_previous_tab(self) -> None:
+        """``ctrl+left``: move the viewer pane's tabsheet one tab back (DC-010, AC6)."""
+        if not self._filter_has_focus():
+            self.tab_panel().previous_tab()
+
+    def action_next_tab(self) -> None:
+        """``ctrl+right``: move the viewer pane's tabsheet one tab forward (DC-010, AC6)."""
+        if not self._filter_has_focus():
+            self.tab_panel().next_tab()
 
     def action_search_viewer(self) -> None:
         """``ctrl+f``: search inside the mounted viewer."""

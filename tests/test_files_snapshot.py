@@ -110,6 +110,32 @@ def test_dual_pane_filtered_snapshot(snap_compare: Callable[..., bool]) -> None:
     assert snap_compare(make_app(), terminal_size=TERMINAL_SIZE, run_before=filter_then_wait)
 
 
+def test_tabsheet_directory_tab_snapshot(snap_compare: Callable[..., bool]) -> None:
+    """DC-010: the default tabsheet shows only the always-visible Directory tab."""
+    build_fixture()
+    assert snap_compare(make_app(), terminal_size=TERMINAL_SIZE, run_before=wait_for_listing)
+
+
+def test_tabsheet_viewer_tab_snapshot(snap_compare: Callable[..., bool]) -> None:
+    """DC-010: opening a text file reveals and activates the Viewer tab."""
+
+    async def open_viewer(pilot: Pilot) -> None:
+        await wait_for_listing(pilot)
+        page = pilot.app.query_one(FilesPage)
+        rows = [row.split(" ", 1)[1] for row in page.active.visible_names()]
+        page.active.move_cursor(rows.index("gamma.md"))
+        page.open_view()
+        for _ in range(120):
+            await pilot.pause()
+            viewer = page.viewer
+            if viewer is not None and viewer.is_mounted and not viewer.loading:
+                return
+        raise AssertionError("the viewer for gamma.md never finished loading")
+
+    build_fixture()
+    assert snap_compare(make_app(), terminal_size=TERMINAL_SIZE, run_before=open_viewer)
+
+
 def test_sort_indicator_snapshot(snap_compare: Callable[..., bool]) -> None:
     """The active sort column carries an arrow in the header (DC-009)."""
 

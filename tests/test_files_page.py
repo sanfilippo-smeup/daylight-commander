@@ -21,7 +21,7 @@ import pytest
 from textual.coordinate import Coordinate
 from textual.events import MouseScrollDown, MouseScrollUp
 from textual.pilot import Pilot
-from textual.widgets import DataTable, Input, Label
+from textual.widgets import DataTable, Input, Label, TabPane
 
 from daylight.app import DaylightApp
 from daylight.components import file_table
@@ -31,7 +31,9 @@ from daylight.components.modules.file_list import (
     FilePanel,
     FilesPage,
 )
+from daylight.components.modules.viewer import ViewerPanel
 from daylight.managers import ConfigManager, FileManager
+from daylight.modals import LaunchScreen
 from daylight.models import AppConfig, DirEntry
 
 #: Generous ceiling: worker threads and the window rebuild need a few turns.
@@ -676,6 +678,187 @@ async def test_sort_indicator_is_visible_without_interaction(tree: Path, tmp_pat
         await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
         # No further interaction: the arrow is already in the rendered header.
         assert f"Size {file_table.SORT_ARROWS[0]}" in header_labels(left)
+
+
+# -- DC-010: the right panel is a two-tab tabsheet -------------------------
+
+
+def tab_ids(panel: FilePanel) -> list[str]:
+    """The ids of a panel's tabsheet panes, in display order."""
+    return [pane.id or "" for pane in panel.tabs.query(TabPane)]
+
+
+async def open_viewer_at(pilot: Pilot, page: FilesPage, name: str) -> ViewerPanel:
+    """Put the active panel's cursor on ``name`` and wait for its viewer."""
+    panel = page.active
+    panel.table.cursor_coordinate = Coordinate(plain_names(panel).index(name), 0)
+    await pilot.pause()
+    page.open_view()
+    for _ in range(SETTLE):
+        await pilot.pause()
+        viewer = page.viewer
+        if viewer is not None and viewer.is_mounted and not viewer.loading:
+            return viewer
+    raise AssertionError(f"viewer for {name} never finished loading")
+
+
+@run_async
+async def test_each_panel_exposes_a_directory_and_a_viewer_tab(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC1: the panel is a tabsheet of exactly two tabs, directory first."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page.panel("left"))
+        for panel in page.panels:
+            assert tab_ids(panel) == [
+                f"directory-{panel.panel_name}",
+                f"viewer-{panel.panel_name}",
+            ]
+
+
+@run_async
+async def test_directory_tab_is_always_visible_and_shows_the_listing(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC2: the directory tab is the current tab and carries the listing."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        right = page.panel("right")
+        await settle(pilot, right)
+        assert right.tabs.active == "directory-right"
+        assert right.directory_tab.display is True
+        assert right.row_count > 0
+        assert "alpha.txt" in plain_names(right)
+
+
+@run_async
+async def test_viewer_tab_is_hidden_until_a_text_file_is_opened(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC3: the Viewer tab does not exist on screen until a file is opened."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        right = page.panel("right")
+        await settle(pilot, right)
+        assert right.viewer_tab_visible is False
+
+
+@run_async
+async def test_opening_a_text_file_activates_the_viewer_tab(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC3/AC4: a text file reveals the Viewer tab, brings it to the front."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        right = page.panel("right")
+        await settle(pilot, left)
+        await open_viewer_at(pilot, page, "alpha.txt")
+        assert right.viewer_tab_visible is True
+        assert right.tabs.active == "viewer-right"
+        # The viewer is a pane, never a fullscreen screen (AC4).
+        assert len(app.screen_stack) == 1
+        assert left.row_count > 0
+
+
+@run_async
+async def test_closing_the_viewer_hides_the_tab_and_returns_to_directory(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC3: closing the viewer drops the tab back to the directory view."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        right = page.panel("right")
+        await settle(pilot, page.panel("left"))
+        await open_viewer_at(pilot, page, "alpha.txt")
+        assert right.viewer_tab_visible is True
+        await pilot.press("escape")
+        await pilot.pause()
+        assert page.viewer is None
+        assert right.viewer_tab_visible is False
+        assert right.tabs.active == "directory-right"
+
+
+@run_async
+async def test_keyboard_tab_switching_keeps_the_directory_state(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC6: ``ctrl+left``/``ctrl+right`` switch the viewer pane's tabs."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        right = page.panel("right")
+        await settle(pilot, left)
+        # Open ``alpha.txt`` and remember the listing state at that moment.
+        await open_viewer_at(pilot, page, "alpha.txt")
+        before_names = plain_names(left)
+        before_cursor = left.cursor_index
+        before_directory = left.directory
+        assert right.tabs.active == "viewer-right"
+
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        assert right.tabs.active == "directory-right"
+
+        await pilot.press("ctrl+right")
+        await pilot.pause()
+        assert right.tabs.active == "viewer-right"
+
+        # The listing behind the tabs never moved.
+        assert plain_names(left) == before_names
+        assert left.cursor_index == before_cursor
+        assert left.directory == before_directory
+
+
+@run_async
+async def test_tab_key_is_a_no_op_without_a_viewer(tree: Path, tmp_path: Path) -> None:
+    """AC6: with only the directory tab shown, switching cannot lose the view."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        right = page.panel("right")
+        await settle(pilot, right)
+        await pilot.press("ctrl+right")
+        await pilot.pause()
+        assert right.tabs.active == "directory-right"
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        assert right.tabs.active == "directory-right"
+
+
+@run_async
+async def test_a_binary_file_never_opens_a_viewer_tab(
+    tree: Path, tmp_path: Path
+) -> None:
+    """AC5: a binary still goes to the OS viewer, leaving the tabs alone."""
+    (tree / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(64)))
+    app = make_app(tree, tmp_path / "config.json")
+    launched: list[Path] = []
+    app.file_manager.launch = lambda request: launched.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        right = page.panel("right")
+        await settle(pilot, left)
+        left.table.cursor_coordinate = Coordinate(plain_names(left).index("shot.png"), 0)
+        await pilot.pause()
+        page.open_view()
+        await pilot.pause()
+        # Nothing opened yet: the confirmation is on screen, no viewer tab.
+        assert launched == []
+        assert isinstance(app.screen, LaunchScreen)
+        assert right.viewer_tab_visible is False
+        await pilot.press("y")
+        await pilot.pause()
+        assert launched == [tree / "shot.png"]
+        assert page.viewer is None
 
 
 # -- AC6: hidden toggle ----------------------------------------------------

@@ -30,6 +30,16 @@
     opacity: 0.75;
 }
 
+/* The two-tab tabsheet (ADR-011): the directory tab is always visible and the
+   viewer tab is conditional, so the tabsheet fills the panel either way. */
+.file-panel TabbedContent {
+    height: 1fr;
+}
+
+.file-panel TabPane {
+    height: 1fr;
+}
+
 .breadcrumb {
     height: 1;
     padding: 0 1;
@@ -43,7 +53,9 @@ DataTable {
     background: $panel;
 }
 
-/* Stable mount point for the internal viewer (ADR-010). */
+/* Stable mount point for the internal viewer (ADR-010); it lives in the Viewer
+   tab now (ADR-011, DC-010). The DC-004 half-height cap is kept so the viewer
+   pane's geometry (and its windowed paging) is unchanged. */
 .panel-mount {
     display: none;
     height: auto;

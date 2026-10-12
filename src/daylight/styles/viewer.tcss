@@ -1,11 +1,10 @@
 /* Internal viewer and properties view (DC-004), mounted in the .panel-mount
-   of the inactive panel. Never a screen: the mount point is a widget, so the
-   listing keeps its half of the terminal (ADR-010). */
+   of the inactive panel's Viewer tab (ADR-010, ADR-011). Never a screen: the
+   mount point is a widget, so the listing keeps its half of the terminal. */
 
 .panel-mount.visible {
     display: block;
     height: 1fr;
-    max-height: 50%;
     border: round $accent;
     background: $panel;
 }
