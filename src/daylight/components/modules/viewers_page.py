@@ -26,7 +26,7 @@ from daylight.components.shell import NoticeLine
 __all__ = ["NOTHING_OPEN", "ViewersPage"]
 
 #: Shown when the tab has nothing to read yet.
-NOTHING_OPEN = " No file open — browse to a file and press v to view it here."
+NOTHING_OPEN = " No file open — browse to a file and press F3 to view it here."
 
 
 class ViewersPage(Vertical):

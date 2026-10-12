@@ -48,7 +48,10 @@ _UNCOUNTED_END = 1 << 40
 MATCH_STYLE = "reverse"
 
 #: The keys that drive the viewer, shown in the header so they are discoverable.
-KEY_HINTS = "v view \u2022 i props \u2022 e edit \u2022 ctrl+f find \u2022 N next \u2022 esc close"
+KEY_HINTS = (
+    "F3 view \u2022 Alt+Enter props \u2022 F4 edit \u2022 Ctrl+F find \u2022 Ctrl+G next"
+    " \u2022 esc close"
+)
 
 
 def render_lines(lines: list[str], start: int, *, needle: str = "", width: int = 5) -> Text:

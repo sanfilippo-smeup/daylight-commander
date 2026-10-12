@@ -24,7 +24,7 @@ from daylight.models import FileProperties
 __all__ = ["PropertiesView"]
 
 #: The keys that drive the properties view, shown in the header.
-KEY_HINTS = "c copy field \u2022 v viewer \u2022 esc close"
+KEY_HINTS = "Ctrl+C copy field \u2022 F3 viewer \u2022 esc close"
 
 
 class PropertiesView(Vertical):
@@ -128,7 +128,9 @@ class PropertiesView(Vertical):
         self._loading = False
         self._table.clear()
         self._table.add_rows(self.rows)
-        self._status.update(f" {len(self.rows)} fields \u2014 press c to copy the selected value")
+        self._status.update(
+            f" {len(self.rows)} fields \u2014 press Ctrl+C to copy the selected value"
+        )
 
     # -- copy --------------------------------------------------------------
 

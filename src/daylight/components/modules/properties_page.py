@@ -21,7 +21,7 @@ from daylight.components.shell import NoticeLine
 __all__ = ["NOTHING_SELECTED", "PropertiesPage"]
 
 #: Shown when the tab has no entry to describe.
-NOTHING_SELECTED = " No entry selected — browse to a file and press i for its properties."
+NOTHING_SELECTED = " No entry selected — browse to a file and press Alt+Enter for its properties."
 
 
 class PropertiesPage(Vertical):
