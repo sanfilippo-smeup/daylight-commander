@@ -54,11 +54,10 @@ DataTable {
 }
 
 /* Stable mount point for the internal viewer (ADR-010); it lives in the Viewer
-   tab now (ADR-011, DC-010). The DC-004 half-height cap is kept so the viewer
-   pane's geometry (and its windowed paging) is unchanged. */
+   tab now (ADR-011, DC-010). The viewer owns its own tab, so it fills the tab's
+   full height (DC-014) instead of the old DC-004 half-height cap. */
 .panel-mount {
     display: none;
     height: auto;
-    max-height: 50%;
     border: round $secondary;
 }

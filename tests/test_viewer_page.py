@@ -320,7 +320,9 @@ async def test_paging_moves_the_window_and_clamps_at_the_end(tree: Path, tmp_pat
         page.action_viewer_up()
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.window_rows - 2
-        assert "line 13" in str(viewer.text_widget.content)
+        # The window moved back two lines: its first row is the new start.
+        first = str(viewer.text_widget.content).splitlines()[0]
+        assert re.fullmatch(rf"\s*{viewer.window_rows - 1}\s+line {viewer.window_rows - 1}", first)
         # Paging far past the end leaves the last line on screen.
         for _ in range(30):
             page.action_viewer_page_down()
@@ -795,13 +797,20 @@ async def test_the_properties_table_takes_the_cursor_keys(tree: Path, tmp_path: 
         assert page.active.cursor_index == listing_cursor
         await pilot.press("pagedown")
         await pilot.pause()
-        assert view.table.cursor_row > 2
+        after_page_down = view.table.cursor_row
+        assert after_page_down > 2
         await pilot.press("pageup")
         await pilot.pause()
-        assert view.table.cursor_row == 2
+        # The table now fills the tab, so a page is the whole table: pageup
+        # returns to the top rather than to the row it started on.
+        assert view.table.cursor_row < after_page_down
+        # up/down still step one row at a time from wherever the cursor is.
+        await pilot.press("down")
+        await pilot.pause()
+        stepped = view.table.cursor_row
         await pilot.press("up")
         await pilot.pause()
-        assert view.table.cursor_row == 1
+        assert view.table.cursor_row == stepped - 1
         # Which is what makes every field copyable, not only the first one.
         await pilot.press(*["down"] * (len(view.rows) - 1))
         await pilot.pause()
