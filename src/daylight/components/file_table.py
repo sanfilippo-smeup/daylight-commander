@@ -29,7 +29,9 @@ __all__ = [
     "format_permissions",
     "format_size",
     "icon_for",
+    "name_order",
     "next_sort_key",
+    "prefix_match_index",
     "sort_entries",
     "sort_key_for_column",
     "type_label",
@@ -255,6 +257,36 @@ def next_sort_key(current: str) -> str:
     if current not in SORT_KEYS:
         return SORT_KEYS[0]
     return SORT_KEYS[(SORT_KEYS.index(current) + 1) % len(SORT_KEYS)]
+
+
+def prefix_match_index(names: list[str], prefix: str, start: int = 0) -> int | None:
+    """Return the first index at or after ``start`` whose name begins with ``prefix``.
+
+    Matching is case-insensitive. Returns ``None`` when no name from ``start``
+    onward shares the prefix, which is the caller's cue to fall back to the next
+    entry in alphabetical order.
+    """
+    needle = prefix.casefold()
+    if not needle:
+        return None
+    for index in range(start, len(names)):
+        if names[index].casefold().startswith(needle):
+            return index
+    return None
+
+
+def name_order(entries: Iterable[DirEntry]) -> list[int]:
+    """Return the indices of ``entries`` ordered by name (case-insensitive).
+
+    Type-ahead navigation (FR-109) is name-based, so it searches a name-ordered
+    view of the listing and maps the match back to the display index. That keeps
+    the alphabetical fallback true even when the table is sorted by size, time
+    or type rather than by name.
+    """
+    return [
+        index
+        for index, _ in sorted(enumerate(entries), key=lambda pair: pair[1].name.casefold())
+    ]
 
 
 def sort_key_for_column(column_index: int) -> str | None:

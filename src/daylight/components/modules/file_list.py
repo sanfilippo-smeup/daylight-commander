@@ -36,13 +36,14 @@ terminal, so it is not an external launch.
 from __future__ import annotations
 
 from pathlib import Path
+from time import monotonic
 
 from textual import on, work
 from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.coordinate import Coordinate
-from textual.events import MouseScrollDown, MouseScrollUp, Resize
+from textual.events import Key, MouseScrollDown, MouseScrollUp, Resize
 from textual.message import Message
 from textual.reactive import var
 from textual.widget import Widget
@@ -62,9 +63,11 @@ __all__ = [
     "PANEL_NAMES",
     "SCROLL_STEP",
     "SCROLLBAR_RESERVE",
+    "TYPEAHEAD_TIMEOUT",
     "FilePanel",
     "FilesPage",
     "LocationChanged",
+    "TypeAhead",
 ]
 
 #: The two panes, in display order. ``active_panel`` is one of these names.
@@ -93,6 +96,65 @@ SCROLLBAR_RESERVE = 1
 CURSOR_ACTIONS: frozenset[str] = frozenset(
     {"cursor_up", "cursor_down", "page_up", "page_down", "scroll_home", "scroll_end"}
 )
+
+#: Seconds of inactivity after which the type-ahead prefix is forgotten.
+TYPEAHEAD_TIMEOUT = 1.0
+
+
+class TypeAhead:
+    """Accumulated type-ahead prefix and the name-order index it points at.
+
+    Each typed character is folded into a prefix and used to locate the first
+    name (in the caller's name-ordered list) that begins with it. Repeating the
+    same character advances to the next matching name instead of lengthening the
+    prefix. When no name shares the prefix, the tracker resets and reports
+    ``None`` so the caller can fall back to the next entry in alphabetical
+    order. The prefix is dropped after :attr:`timeout` seconds of inactivity.
+    """
+
+    def __init__(self, timeout: float = TYPEAHEAD_TIMEOUT) -> None:
+        self.timeout = timeout
+        self._prefix = ""
+        self._last_char = ""
+        self._match = -1
+        self._stamp = 0.0
+
+    def reset(self) -> None:
+        """Forget the prefix, the last character and the last match."""
+        self._prefix = ""
+        self._last_char = ""
+        self._match = -1
+        self._stamp = 0.0
+
+    def expired(self, now: float) -> bool:
+        """True once the prefix has been idle for longer than :attr:`timeout`."""
+        return bool(self._prefix) and now - self._stamp > self.timeout
+
+    def advance(self, character: str, names: list[str], now: float) -> int | None:
+        """Consume ``character`` and return the matching index, or ``None``.
+
+        ``None`` means no name shares the (new) prefix: the caller moves to the
+        next entry in alphabetical order instead. ``names`` is expected to be in
+        name order, so the index returned is a name-order index.
+        """
+        if self.expired(now):
+            self.reset()
+        folded = character.casefold()
+        if not folded:
+            return None
+        self._stamp = now
+        if folded == self._last_char:
+            start = self._match + 1
+        else:
+            self._prefix += folded
+            self._last_char = folded
+            start = 0
+        target = file_table.prefix_match_index(names, self._prefix, start)
+        if target is None:
+            self.reset()
+            return None
+        self._match = target
+        return target
 
 
 class LocationChanged(Message):
@@ -144,6 +206,8 @@ class FilePanel(Vertical):
         self.view_offset = 0
         self.window_start = 0
         self.window_stop = 0
+        #: Accumulated type-ahead prefix (FR-109); reset on navigation and idle.
+        self._typeahead = TypeAhead()
         # The child widgets are built here rather than in ``compose`` so the
         # panel can hand out stable references before it is mounted.
         self._breadcrumb = Static("", id=f"breadcrumb-{name}", classes="breadcrumb")
@@ -382,13 +446,86 @@ class FilePanel(Vertical):
         """Re-materialise the window: a resize changes how many rows fit."""
         self.show_range(self.view_offset, self.cursor_index)
 
+    # -- type-ahead (FR-109) ------------------------------------------------
+
+    def _typeahead_enabled(self) -> bool:
+        """True only while this panel's table owns the keyboard (AC6).
+
+        The filter input, the form screens and the other panel all leave the
+        keyboard elsewhere, so the type-ahead prefix must not accumulate then.
+        """
+        return self.app.focused is self.table
+
+    def _typeahead_order(self) -> list[int]:
+        """Display indices of the visible entries in case-insensitive name order.
+
+        Type-ahead is name-based (FR-109), so a match found in this order is
+        mapped back to the row the table actually shows. That is what makes the
+        alphabetical fallback hold under a size/time/type sort, where listing
+        order and name order disagree.
+        """
+        return file_table.name_order(self.visible_entries)
+
+    def _next_by_name(self, order: list[int]) -> int:
+        """Display index of the entry after the cursor in name order.
+
+        An empty order means an empty listing, where the cursor is already at the
+        only valid index, so ``0`` is returned.
+        """
+        if not order:
+            return 0
+        current = self.cursor_index
+        rank = order.index(current) if current in order else -1
+        return order[min(rank + 1, len(order) - 1)]
+
+    def on_key(self, event: Key) -> None:
+        """Consume a printable keystroke as type-ahead (FR-109).
+
+        Only while this panel's table has the keyboard, and only for keys no
+        action claims: after DC-012 no printable letter is bound, so every letter
+        reaches the type-ahead while ``/``, ``space`` and the modified keys keep
+        their meaning (AC6).
+        """
+        if not self._typeahead_enabled():
+            return
+        character = event.character
+        if not character or not character.isprintable() or character.isspace():
+            return
+        if event.key in self.app.active_bindings:
+            return
+        if self.typeahead_char(character):
+            event.stop()
+
+    def typeahead_char(self, character: str) -> bool:
+        """Move the cursor to the type-ahead match for ``character``.
+
+        The search runs over a name-ordered view of the visible entries, so a
+        prefix match jumps to the alphabetically first such entry and a repeated
+        keystroke advances through the matches. When nothing shares the prefix,
+        the cursor moves to the next entry in alphabetical order. Returns True
+        always: a printable key the listing claimed is consumed either way.
+        """
+        order = self._typeahead_order()
+        names = [self.visible_entries[index].name for index in order]
+        target = self._typeahead.advance(character, names, monotonic())
+        if target is None:
+            self.move_cursor(self._next_by_name(order))
+        else:
+            self.move_cursor(order[target])
+        return True
+
     # -- listing -----------------------------------------------------------
 
     def reload(self) -> None:
-        """Re-read the directory off the event loop and refill the table."""
+        """Re-read the directory off the event loop and refill the table.
+
+        A rebuilt listing invalidates any half-typed prefix, so a copy, delete or
+        refresh cannot leave the cursor jumping to a stale match (FR-109).
+        """
         self.entries = []
         self.visible_entries = []
         self._listing = True
+        self._typeahead.reset()
         self.show_range(0, 0)
         self.scan()
 
