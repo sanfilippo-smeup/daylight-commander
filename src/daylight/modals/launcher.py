@@ -48,6 +48,19 @@ class LaunchScreen(ModalContainer[bool]):
     def __init__(self, request: LaunchRequest, *, title: str = LAUNCH_TITLE) -> None:
         self.request = request
         super().__init__(title)
+        # The body holds only labels about the launch, so it is not a tab stop:
+        # that leaves the two answers as the keyboard order, and ``Tab`` from
+        # "Open" lands on "Cancel" instead of the scrollable body (FR-403).
+        self.body.can_focus = False
+
+    def on_mount(self) -> None:
+        """Open with "Open" focused: Enter confirms, Tab reaches Cancel (FR-403).
+
+        Opening is opt-in, so the affirmative answer is the default the keyboard
+        starts on -- but nothing launches from focus alone. The launch still runs
+        only from the answer callback, which fires when this screen is dismissed.
+        """
+        self.query_one("#confirm-yes", Button).focus()
 
     def compose_body(self) -> ComposeResult:
         """The question, what will open, and the two answers in the footer."""

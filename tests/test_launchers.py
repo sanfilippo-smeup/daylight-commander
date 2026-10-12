@@ -8,9 +8,15 @@ the answer callback of the confirmation.
 
 from __future__ import annotations
 
+import asyncio
+import functools
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, TypeVar
 
 import pytest
+from textual.app import App
+from textual.widgets import Button
 
 from daylight.managers import FileManager
 from daylight.managers.external import (
@@ -25,6 +31,40 @@ from daylight.managers.external import (
 )
 from daylight.modals import LaunchScreen
 from daylight.modals.launcher import launch_detail, launch_message
+
+#: Terminal size used for every pilot scenario.
+SIZE = (80, 24)
+
+F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
+
+
+def run_async(fn: F) -> F:
+    """Run an async test body on a fresh event loop (no pytest-asyncio needed)."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return asyncio.run(fn(*args, **kwargs))
+
+    return wrapper  # type: ignore[return-value]
+
+
+class _LauncherHost(App[None]):
+    """A one-screen app whose only job is to show a launch confirmation."""
+
+    def __init__(self, request: LaunchRequest) -> None:
+        super().__init__()
+        self._request = request
+        self.answers: list[bool | None] = []
+
+    def on_mount(self) -> None:
+        self.push_screen(LaunchScreen(self._request), self.answers.append)
+
+
+def _link_request() -> LaunchRequest:
+    return LaunchRequest(
+        "link", "https://example.com", "your default browser", ("open", "https://example.com")
+    )
+
 
 # -- URL recognition (FR-402) ----------------------------------------------
 
@@ -215,3 +255,61 @@ def test_backing_out_of_the_confirmation_answers_no() -> None:
         LaunchRequest("file", "/tmp/shot.png", "the default application", ("open", "/tmp/shot.png"))
     )
     assert screen.cancelled_result() is False
+
+
+# -- DC-011: the confirmation's focus and keyboard flow ---------------------
+
+
+@run_async
+async def test_the_launch_dialog_opens_with_open_focused() -> None:
+    """AC1: when the confirmation appears, "Open" is the focused answer."""
+    app = _LauncherHost(_link_request())
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        focused = app.focused
+        assert isinstance(focused, Button)
+        assert focused.id == "confirm-yes"
+        assert str(focused.label) == "Open"
+
+
+@run_async
+async def test_enter_confirms_the_launch() -> None:
+    """AC2: Enter while the dialog is open runs the "Open" action."""
+    app = _LauncherHost(_link_request())
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.answers == [True]
+        assert not isinstance(app.screen, LaunchScreen)
+
+
+@run_async
+async def test_tab_moves_focus_to_cancel_and_cancel_declines() -> None:
+    """AC3: Tab reaches "Cancel", and activating it declines the launch."""
+    app = _LauncherHost(_link_request())
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        focused = app.focused
+        assert isinstance(focused, Button)
+        assert focused.id == "confirm-no"
+        assert str(focused.label) == "Cancel"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.answers == [False]
+        assert not isinstance(app.screen, LaunchScreen)
+
+
+@run_async
+async def test_the_dialog_does_not_open_by_itself() -> None:
+    """AC4: focus alone launches nothing; the answer must be explicit."""
+    app = _LauncherHost(_link_request())
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, LaunchScreen)
+        assert app.answers == []
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.answers == [True]
