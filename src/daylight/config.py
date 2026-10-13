@@ -26,7 +26,6 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "switch_panel": "ctrl+t",
     "go_up": "backspace",
     "start_filter": "slash",
-    "toggle_hidden": "ctrl+h",
     # DC-012: operations live on F-keys and Ctrl/modified keys, never on a
     # printable letter, so type-ahead (DC-007) can claim every letter key.
     "cycle_sort": "ctrl+s",

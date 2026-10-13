@@ -282,9 +282,10 @@ async def test_a_page_action_from_the_palette_runs_on_that_page(tree: Path) -> N
         await wait_for_listing(pilot)
         app.show_page("settings")
         await wait_for(pilot, lambda app: app.active_page == "settings")
-        app.run_page_action("files", "toggle_hidden")
+        app.run_page_action("files", "cycle_sort")
         await pilot.pause()
-        assert app.file_manager.show_hidden is True
+        page = app.query_one(FilesPage)
+        assert page.panel("left").sort_key == "size"
         assert app.active_page == "files"
 
 

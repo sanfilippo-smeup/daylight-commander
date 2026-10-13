@@ -27,7 +27,7 @@ def format_key(key: str) -> str:
     """``ctrl+pageup`` -> ``Ctrl+pgup``, ``slash`` -> ``/``: a key as a hint.
 
     Modifiers are spelled out and the key itself is named the way Textual names
-    it, so the bar and the palette say ``Ctrl+H``, not ``ctrl+h``.
+    it, so the bar and the palette say ``Ctrl+A``, not ``ctrl+a``.
     """
     *modifiers, character = key.split("+")
     shown = format_key_character(character)

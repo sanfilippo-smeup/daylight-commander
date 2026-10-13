@@ -1065,7 +1065,6 @@ class FilesPage(Vertical):
         Binding("ctrl+t", "switch_panel", "Switch pane", show=True, id="switch_panel"),
         Binding("backspace", "go_up", "Up", show=True, id="go_up"),
         Binding("slash", "start_filter", "Filter", show=True, id="start_filter"),
-        Binding("ctrl+h", "toggle_hidden", "Hidden", show=True, id="toggle_hidden"),
         # DC-012: the operation keys are F-keys or Ctrl/modified keys, never a
         # printable letter, so type-ahead (DC-007) can claim every letter key.
         Binding("ctrl+s", "cycle_sort", "Sort", show=True, id="cycle_sort"),
@@ -1263,13 +1262,6 @@ class FilesPage(Vertical):
         """``ctrl+r``: reverse the active panel's current sort."""
         if not self._filter_has_focus():
             self.active.reverse_sort()
-
-    def action_toggle_hidden(self) -> None:
-        """``ctrl+h``: toggle hidden entries and persist the preference."""
-        self.file_manager.show_hidden = not self.file_manager.show_hidden
-        self.config_manager.update(show_hidden=self.file_manager.show_hidden)
-        for panel in self.panels:
-            panel.reload()
 
     # -- multi-selection (AC4) ----------------------------------------------
 
