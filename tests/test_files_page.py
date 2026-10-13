@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import pytest
+from rich.text import Text
 from textual.coordinate import Coordinate
 from textual.events import MouseScrollDown, MouseScrollUp
 from textual.pilot import Pilot
@@ -115,8 +116,13 @@ async def wait_for(pilot: Pilot, predicate: Callable[[], bool]) -> None:
 
 
 def plain_names(panel: FilePanel) -> list[str]:
-    """Row names without the leading icon."""
-    return [name.split(" ", 1)[1] for name in panel.visible_names()]
+    """Row names without the leading icon (and optional selection marker)."""
+    result = []
+    for name in panel.visible_names():
+        if name.startswith("* "):
+            name = name[2:]
+        result.append(name.split(" ", 1)[1])
+    return result
 
 
 # -- AC2: two panels, exactly one active -----------------------------------
@@ -1424,3 +1430,55 @@ async def test_rows_show_size_time_permissions_and_icon(tree: Path, tmp_path: Pa
         assert size == "3.0K"
         assert len(modified) == 16
         assert permissions == "rw-r--r--"
+
+
+# -- DC-016: selected rows are visually distinct ----------------------------
+
+
+@run_async
+async def test_space_toggles_selection_mark(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        index = plain_names(left).index("alpha.txt")
+        left.table.cursor_coordinate = Coordinate(index, 0)
+        await pilot.pause()
+        before = left.table.get_row_at(index)[0]
+        assert isinstance(before, str)
+        await pilot.press("space")
+        await pilot.pause()
+        after = left.table.get_row_at(index)[0]
+        assert isinstance(after, Text)
+        assert str(after).startswith("*")
+        await pilot.press("space")
+        await pilot.pause()
+        final = left.table.get_row_at(index)[0]
+        assert isinstance(final, str)
+        assert not str(final).startswith("*")
+
+
+@run_async
+async def test_selection_mark_survives_re_sort(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        index = plain_names(left).index("alpha.txt")
+        left.table.cursor_coordinate = Coordinate(index, 0)
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+        selected_path = left.visible_entries[left.cursor_index].path
+        await pilot.press("ctrl+s")
+        await wait_for(pilot, lambda: left.sort_key == "size" and not left.loading)
+        found = False
+        for i in range(left.row_count):
+            cell = left.table.get_row_at(i)[0]
+            if isinstance(cell, Text) and str(cell).startswith("*"):
+                assert left.visible_entries[left.window_start + i].path == selected_path
+                found = True
+                break
+        assert found, "selected mark did not survive re-sort"

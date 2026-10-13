@@ -390,7 +390,10 @@ class FilePanel(Vertical):
     def name_at(self, index: int) -> str:
         """Return the display name of listing row ``index``, materialised or not."""
         if 0 <= index < len(self.visible_entries):
-            return file_table.build_row(self.visible_entries[index])[0]
+            entry = self.visible_entries[index]
+            return str(
+                file_table.build_row(entry, selected=entry.path in self._selected)[0]
+            )
         return ""
 
     # -- lifecycle ---------------------------------------------------------
@@ -607,7 +610,12 @@ class FilePanel(Vertical):
         if force or moved or not self.table.row_count:
             self.window_start, self.window_stop = start, stop
             self.table.clear()
-            self.table.add_rows(file_table.build_rows(self.visible_entries[start:stop]))
+            self.table.add_rows(
+                file_table.build_rows(
+                    self.visible_entries[start:stop],
+                    selected=frozenset(self._selected),
+                )
+            )
         self.view_offset = offset
         if self.table.row_count:
             self.table.cursor_coordinate = Coordinate(
@@ -748,6 +756,7 @@ class FilePanel(Vertical):
         else:
             self._selected.add(entry.path)
         self.update_breadcrumb()
+        self.show_range(self.view_offset, self.cursor_index, force=True)
         return entry
 
     def select_all(self) -> int:

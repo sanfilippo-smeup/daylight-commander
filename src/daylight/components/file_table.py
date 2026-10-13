@@ -11,6 +11,8 @@ import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+from rich.text import Text
+
 from daylight.models import DirEntry
 
 __all__ = [
@@ -167,20 +169,26 @@ def format_breadcrumb(path: Path) -> str:
 # -- rows ------------------------------------------------------------------
 
 
-def build_row(entry: DirEntry) -> tuple[str, ...]:
+def build_row(entry: DirEntry, selected: bool = False) -> tuple[str | Text, ...]:
     """Return the display cells for one entry, in :data:`COLUMNS` order."""
+    name = f"{icon_for(entry)} {entry.name}"
+    if selected:
+        name = Text(f"* {name}", style="bold")
     return (
-        f"{icon_for(entry)} {entry.name}",
+        name,
         format_size(entry),
         format_mtime(entry),
         format_permissions(entry),
     )
 
 
-def build_rows(entries: Iterable[DirEntry]) -> Iterator[tuple[str, ...]]:
+def build_rows(
+    entries: Iterable[DirEntry],
+    selected: frozenset[Path] = frozenset(),
+) -> Iterator[tuple[str | Text, ...]]:
     """Lazily yield display rows; nothing is materialised up front."""
     for entry in entries:
-        yield build_row(entry)
+        yield build_row(entry, selected=entry.path in selected)
 
 
 # -- virtualisation ---------------------------------------------------------

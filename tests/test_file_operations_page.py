@@ -106,8 +106,13 @@ async def wait_for(pilot: Pilot, predicate: Callable[[], bool], turns: int = SET
 
 
 def plain_names(panel: FilePanel) -> list[str]:
-    """Row names without the leading icon."""
-    return [name.split(" ", 1)[1] for name in panel.visible_names()]
+    """Row names without the leading icon (and optional selection marker)."""
+    result = []
+    for name in panel.visible_names():
+        if name.startswith("* "):
+            name = name[2:]
+        result.append(name.split(" ", 1)[1])
+    return result
 
 
 def cursor_on(panel: FilePanel, name: str) -> None:

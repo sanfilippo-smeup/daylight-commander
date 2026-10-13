@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 from daylight.components import file_table
 from daylight.models import DirEntry
@@ -72,6 +73,37 @@ def test_build_rows_is_lazy() -> None:
 
 def test_build_rows_yields_every_entry(entries: list[DirEntry]) -> None:
     assert len(list(file_table.build_rows(entries))) == len(entries)
+
+
+def test_build_row_selected_returns_bold_text_with_star() -> None:
+    row = file_table.build_row(make_entry("notes.txt"), selected=True)
+    name_cell = row[0]
+    assert isinstance(name_cell, Text)
+    assert name_cell.plain.startswith("*")
+    assert "bold" in str(name_cell.style)
+
+
+def test_build_row_unselected_returns_plain_string() -> None:
+    row = file_table.build_row(make_entry("notes.txt"), selected=False)
+    assert isinstance(row[0], str)
+    assert not row[0].startswith("*")
+
+
+def test_build_row_default_is_unselected() -> None:
+    row_default = file_table.build_row(make_entry("notes.txt"))
+    row_explicit = file_table.build_row(make_entry("notes.txt"), selected=False)
+    assert row_default == row_explicit
+
+
+def test_build_rows_passes_selected_set() -> None:
+    a = make_entry("a.txt")
+    b = make_entry("b.txt")
+    selected = frozenset({a.path})
+    rows = list(file_table.build_rows([a, b], selected=selected))
+    assert isinstance(rows[0][0], Text)
+    assert rows[0][0].plain.startswith("*")
+    assert isinstance(rows[1][0], str)
+    assert not rows[1][0].startswith("*")
 
 
 # -- formatting (AC7) ------------------------------------------------------
