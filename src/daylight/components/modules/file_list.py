@@ -716,6 +716,24 @@ class FilePanel(Vertical):
             return
         self.go_to(manager.parent_of(self.directory))
 
+    def focus_parent(self) -> None:
+        """Move the cursor onto the ``..`` parent row without navigating (DC-017).
+
+        Going up is an explicit two-step: ``backspace`` highlights ``..`` (row
+        0 of the listing) and ``enter`` on it ascends. At the filesystem root
+        there is no ``..`` row, so this is a no-op. A filter can hide ``..``,
+        so an active filter is cleared first (FR-104) and the view re-derived;
+        the rebuild starts from the top, which is ``..`` again.
+        """
+        manager: FileManager = self.app.file_manager  # type: ignore[attr-defined]
+        if not manager.can_ascend(self.directory):
+            return
+        if self.filter_text:
+            self.clear_filter()
+            self.refresh_view()
+            return
+        self.move_cursor(0)
+
     def enter_selected(self) -> None:
         """Enter the selected directory, if the cursor is on one."""
         entry = self.selected_entry()
@@ -1227,9 +1245,9 @@ class FilesPage(Vertical):
         self.switch_panel()
 
     def action_go_up(self) -> None:
-        """``backspace``: navigate the active panel up one level."""
+        """``backspace``: highlight the ``..`` parent row; ``enter`` ascends (DC-017)."""
         if not self._filter_has_focus():
-            self.active.ascend()
+            self.active.focus_parent()
 
     def action_start_filter(self) -> None:
         """``/``: reveal the filter input and focus it."""

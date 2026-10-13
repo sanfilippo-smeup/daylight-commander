@@ -286,7 +286,8 @@ async def test_enter_on_a_file_does_not_navigate(tree: Path, tmp_path: Path) -> 
 
 
 @run_async
-async def test_backspace_navigates_up(tree: Path, tmp_path: Path) -> None:
+async def test_backspace_moves_the_cursor_to_the_parent_row(tree: Path, tmp_path: Path) -> None:
+    """DC-017 AC1: ``backspace`` highlights ``..`` and does NOT change directory."""
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
@@ -295,7 +296,85 @@ async def test_backspace_navigates_up(tree: Path, tmp_path: Path) -> None:
         left.go_to(tree / "docs")
         await settle(pilot, left)
         assert left.directory == tree / "docs"
+        assert plain_names(left)[0] == ".."
+        # Start away from the parent row, so the move is observable.
+        left.table.cursor_coordinate = Coordinate(1, 0)
+        await pilot.pause()
+        assert left.cursor_index == 1
         await pilot.press("backspace")
+        await pilot.pause()
+        assert left.directory == tree / "docs", "backspace must not navigate"
+        assert left.cursor_index == 0
+        selected = left.selected_entry()
+        assert selected is not None and selected.is_parent
+
+
+@run_async
+async def test_backspace_then_enter_ascends(tree: Path, tmp_path: Path) -> None:
+    """DC-017 AC1+AC2: the two-step go-up — backspace highlights, enter ascends."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        left.go_to(tree / "docs")
+        await settle(pilot, left)
+        left.table.cursor_coordinate = Coordinate(1, 0)
+        await pilot.pause()
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert left.directory == tree / "docs"
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: left.directory == tree)
+        assert left.directory == tree
+
+
+@run_async
+async def test_backspace_at_the_root_is_a_no_op(tmp_path: Path) -> None:
+    """DC-017 AC3: at the filesystem root there is no ``..`` and backspace does nothing."""
+    app = make_app(tmp_path, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        left.go_to(Path("/"))
+        await settle(pilot, left)
+        assert ".." not in plain_names(left)
+        left.table.cursor_coordinate = Coordinate(0, 0)
+        await pilot.pause()
+        before = left.cursor_index
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert left.directory == Path("/")
+        assert left.cursor_index == before
+
+
+@run_async
+async def test_backspace_with_a_filter_clears_it_and_focuses_parent(
+    tree: Path, tmp_path: Path
+) -> None:
+    """DC-017 AC4: a filter hides ``..``, so backspace clears it first."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        left = page.panel("left")
+        await settle(pilot, left)
+        left.go_to(tree / "docs")
+        await settle(pilot, left)
+        left.set_filter("deep")
+        await wait_for(pilot, lambda: left.row_count == 1)
+        assert plain_names(left) == ["deep.md"], "the filter hides the parent row"
+        await pilot.press("backspace")
+        await wait_for(
+            pilot,
+            lambda: left.filter_text == ""
+            and left.cursor_index == 0
+            and left.selected_entry() is not None
+            and left.selected_entry().is_parent,
+        )
+        assert left.directory == tree / "docs", "backspace must not navigate"
+        assert page.filter_input.value == ""
+        assert plain_names(left)[0] == ".."
+        await pilot.press("enter")
         await wait_for(pilot, lambda: left.directory == tree)
         assert left.directory == tree
 
@@ -350,7 +429,10 @@ async def test_navigation_only_affects_the_active_panel(tree: Path, tmp_path: Pa
         await settle(pilot, left)
         left.go_to(tree / "docs")
         await settle(pilot, left)
-        await pilot.press("backspace")
+        await pilot.press("backspace")  # DC-017: highlights ``..``, no navigation yet
+        await pilot.pause()
+        assert left.directory == tree / "docs"
+        await pilot.press("enter")  # confirm the ascent
         await wait_for(pilot, lambda: left.directory == tree)
         assert right.directory == tree
 
@@ -428,7 +510,7 @@ async def test_entering_a_subdirectory_clears_the_filter(tree: Path, tmp_path: P
 
 @run_async
 async def test_navigating_up_clears_the_filter(tree: Path, tmp_path: Path) -> None:
-    """AC2: ``backspace`` to the parent drops the filter too."""
+    """AC2: ascending to the parent drops the filter too (DC-008, via DC-017)."""
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
@@ -439,7 +521,16 @@ async def test_navigating_up_clears_the_filter(tree: Path, tmp_path: Path) -> No
         left.set_filter("deep")
         await wait_for(pilot, lambda: left.row_count == 1)
         assert plain_names(left) == ["deep.md"]
-        await pilot.press("backspace")
+        await pilot.press("backspace")  # DC-017: clears the filter, highlights ``..``
+        await wait_for(
+            pilot,
+            lambda: left.filter_text == ""
+            and left.cursor_index == 0
+            and left.selected_entry() is not None
+            and left.selected_entry().is_parent,
+        )
+        assert left.directory == tree / "docs"
+        await pilot.press("enter")  # ascend
         await wait_for(pilot, lambda: left.directory == tree)
         await settle(pilot, left)
         assert left.filter_text == ""
