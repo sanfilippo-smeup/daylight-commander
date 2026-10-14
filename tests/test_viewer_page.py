@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -261,6 +262,75 @@ async def test_json_is_pretty_printed_with_line_numbers(tree: Path, tmp_path: Pa
         assert '  "b": 1,' in body
         assert body.startswith("  1  {")
         assert viewer.line_count == 9
+
+
+@run_async
+async def test_a_long_json_file_fills_the_viewport_and_reaches_the_last_line(
+    tree: Path, tmp_path: Path
+) -> None:
+    """DC-020: the json window follows the real viewport, never a 24-line cap.
+
+    The document is held whole in memory, so the first window must be sized by
+    the pane it lands in -- not by the fallback that applies before the layout
+    has spoken -- and every line must stay reachable, to the very last one.
+    """
+    raw = json.dumps({"items": [f"entry {n}" for n in range(1, 81)]})
+    (tree / "big.json").write_text(raw, encoding="utf-8")
+    expected = len(json.dumps(json.loads(raw), indent=2).splitlines())
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "big.json")
+        assert viewer.kind == "json"
+        assert viewer.is_rendered is False
+        assert expected > SIZE[1]
+        # The full pretty-printed document is held, and the first window is the
+        # pane's real height rather than the fallback it was opened with.
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if viewer.body.size.height and len(viewer.lines) == viewer.body.size.height:
+                break
+        assert viewer.line_count == expected
+        assert viewer.window_rows == viewer.body.size.height
+        assert len(viewer.lines) == viewer.window_rows
+        # Ctrl+Down steps a line; Ctrl+PageDown walks to the very last one.
+        page.action_viewer_down()
+        await pilot.pause()
+        assert viewer.line_start == 1
+        for _ in range(6):
+            page.action_viewer_page_down()
+            await pilot.pause()
+        assert viewer.line_start == expected - 1
+        assert viewer.line_start + len(viewer.lines) == expected
+        assert f"line {expected} of {expected}" in str(viewer.status.content)
+        assert f"{expected:>3}  }}" in str(viewer.text_widget.content)
+        # Ctrl+PageUp walks back a screenful.
+        page.action_viewer_page_up()
+        await pilot.pause()
+        assert viewer.line_start == expected - 1 - viewer.window_rows
+        # Resizing the pane re-renders the window to the new height.
+        tall = viewer.window_rows
+        await pilot.resize_terminal(120, 24)
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if viewer.window_rows < tall and len(viewer.lines) == viewer.window_rows:
+                break
+        assert viewer.window_rows == viewer.body.size.height
+        assert len(viewer.lines) == viewer.window_rows
+        assert viewer.window_rows < tall
+        # Back at the top, a taller pane re-fills the window again.
+        for _ in range(10):
+            page.action_viewer_page_up()
+        await pilot.pause()
+        assert viewer.line_start == 0
+        await pilot.resize_terminal(120, 60)
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if viewer.window_rows > tall and len(viewer.lines) == viewer.window_rows:
+                break
+        assert viewer.window_rows == viewer.body.size.height
+        assert len(viewer.lines) == viewer.window_rows
 
 
 @run_async

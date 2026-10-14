@@ -204,7 +204,14 @@ class ViewerPanel(Vertical):
     def on_resize(self, event: Resize) -> None:
         """Re-read the window only when a resize changed how many lines fit."""
         del event
-        if self.is_windowed and not self._loading and self._window_rows != self.window_rows:
+        if self._loading or self._window_rows == self.window_rows:
+            return
+        if self._document_lines is not None:
+            # The whole document is held in memory (json): re-render its window
+            # straight from memory, so it follows the real viewport height
+            # instead of the fallback it was opened with.
+            self.show_window(*self._memory_window(self.line_start))
+        elif self.is_windowed:
             self.read_window(self.line_start)
 
     @on(Input.Changed, ".viewer-search")
