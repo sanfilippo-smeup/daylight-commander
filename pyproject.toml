@@ -4,12 +4,32 @@ build-backend = "hatchling.build"
 
 [project]
 name = "daylight-commander"
-version = "0.1.0"
+version = "1.0.0"
 description = "Daylight Commander — a fast TUI file commander built with Textual."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Daylight Commander contributors" }]
+keywords = ["tui", "file-manager", "commander", "textual", "terminal"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Filesystems",
+    "Topic :: Utilities",
+]
 requires-python = ">=3.13"
 dependencies = [
     "textual>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sanfilippo-smeup/daylight-commander"
+Repository = "https://github.com/sanfilippo-smeup/daylight-commander"
 
 [project.scripts]
 daylight = "daylight.__main__:cli"
