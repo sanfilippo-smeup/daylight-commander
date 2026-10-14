@@ -53,6 +53,20 @@ PAGE_LABELS: dict[str, str] = {
 #: The page the app starts on.
 DEFAULT_PAGE = "files"
 
+#: Footer display order (DC-019): the frequent file operations first, then the
+#: global Palette / Switch pane / Quit keys. Actions the order does not name --
+#: every other page's own keys -- keep their page-then-app declaration order,
+#: ahead of the named ones.
+HINT_ORDER: dict[str, int] = {
+    "copy_to_other": 0,
+    "move_to_other": 1,
+    "new_directory": 2,
+    "delete": 3,
+    "command_palette": 4,
+    "switch_panel": 5,
+    "quit": 6,
+}
+
 
 class DaylightApp(App[None]):
     """Daylight Commander application."""
@@ -194,12 +208,17 @@ class DaylightApp(App[None]):
         return entry.path if entry is not None else None
 
     def key_hints(self) -> list[tuple[str, str]]:
-        """The keybinding hints of the current view: the page's, then the app's.
+        """The keybinding hints of the current view, in footer order.
 
         A page binding and an app binding can share a key; the page wins, because
         it is the more specific one and the one the user is actually in. A key the
         user rebound in Settings is shown as the new key, not the shipped one
         (AC2): a hint that names a key which no longer works is worse than none.
+
+        The bar reads in :data:`HINT_ORDER`'s sequence (DC-019): the file
+        operations, then Palette, Switch pane, Quit. Actions the order does not
+        name keep their page-then-app declaration order, ahead of the named
+        ones.
         """
         page = self._pages.get(self.active_page)
         bindings: list[BindingType] = []
@@ -207,9 +226,9 @@ class DaylightApp(App[None]):
             bindings.extend(type(page).BINDINGS)
         bindings.extend(self.BINDINGS)
         overrides = self.app_config.keybindings
-        hints: list[tuple[str, str]] = []
+        collected: list[tuple[int, int, str, str]] = []
         seen: set[str] = set()
-        for binding in Binding.make_bindings(bindings):
+        for position, binding in enumerate(Binding.make_bindings(bindings)):
             if not binding.show:
                 continue
             # A rebound key is the key that works, so it is also the key the
@@ -218,8 +237,10 @@ class DaylightApp(App[None]):
             if key in seen:
                 continue
             seen.add(key)
-            hints.append((key, binding.description or binding.action))
-        return hints
+            rank = HINT_ORDER.get(binding.id or "", -1)
+            collected.append((rank, position, key, binding.description or binding.action))
+        collected.sort()
+        return [(key, description) for _, _, key, description in collected]
 
     # -- lifecycle ---------------------------------------------------------
 

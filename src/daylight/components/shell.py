@@ -19,20 +19,24 @@ from textual.widgets import Static, Tab, Tabs
 
 __all__ = ["KeyHintBar", "NoticeLine", "ShellHeader", "format_hints", "format_key"]
 
-#: What separates two hints in the bar.
-HINT_SEPARATOR = "  │  "
+#: What separates two hints in the bar (DC-019): a middle dot, distinct from
+#: the ``│`` field separator the panel headers use.
+HINT_SEPARATOR = " · "
 
 
 def format_key(key: str) -> str:
     """``ctrl+pageup`` -> ``Ctrl+pgup``, ``slash`` -> ``/``: a key as a hint.
 
     Modifiers are spelled out and the key itself is named the way Textual names
-    it, so the bar and the palette say ``Ctrl+A``, not ``ctrl+a``.
+    it, so the bar and the palette say ``Ctrl+A``, not ``ctrl+a``. Function
+    keys read the way the keyboard labels them (``F5``, not ``f5``).
     """
     *modifiers, character = key.split("+")
     shown = format_key_character(character)
     if len(shown) == 1 and shown.isalpha():
         shown = shown.upper()
+    elif shown[:1] in ("f", "F") and shown[1:].isdigit():
+        shown = shown.capitalize()
     return "+".join([*(part.capitalize() for part in modifiers), shown])
 
 

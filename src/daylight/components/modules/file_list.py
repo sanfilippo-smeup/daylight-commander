@@ -1063,27 +1063,28 @@ class FilesPage(Vertical):
     # override from the Settings page be applied at runtime (DC-006, AC2).
     BINDINGS = [
         Binding("ctrl+t", "switch_panel", "Switch pane", show=True, id="switch_panel"),
-        Binding("backspace", "go_up", "Up", show=True, id="go_up"),
-        Binding("slash", "start_filter", "Filter", show=True, id="start_filter"),
+        Binding("backspace", "go_up", "Up", show=False, id="go_up"),
+        Binding("slash", "start_filter", "Filter", show=False, id="start_filter"),
         # DC-012: the operation keys are F-keys or Ctrl/modified keys, never a
         # printable letter, so type-ahead (DC-007) can claim every letter key.
-        Binding("ctrl+s", "cycle_sort", "Sort", show=True, id="cycle_sort"),
-        Binding("ctrl+r", "reverse_sort", "Reverse", show=True, id="reverse_sort"),
-        # The operation keys are deliberately hidden from the footer: the bar
-        # already runs out of room at 120 columns, and the navigation keys that
-        # were there first are the ones a new user needs to see.
+        Binding("ctrl+s", "cycle_sort", "Sort", show=False, id="cycle_sort"),
+        Binding("ctrl+r", "reverse_sort", "Reverse", show=False, id="reverse_sort"),
+        # DC-019: the footer shows the frequent operations -- Copy, Move,
+        # New dir, Delete -- next to the global keys; navigation, sort, filter
+        # and every rare operation stay reachable only via the command palette.
+        # The footer's display order is fixed by the app's ``key_hints()``.
         Binding("space", "toggle_select", "Select", show=False, id="toggle_select"),
         Binding("ctrl+a", "select_all", "Select all", show=False, id="select_all"),
         Binding("ctrl+shift+a", "clear_selection", "Select none", show=False, id="clear_selection"),
-        Binding("f5", "copy_to_other", "Copy", show=False, id="copy_to_other"),
-        Binding("f6", "move_to_other", "Move", show=False, id="move_to_other"),
-        Binding("f7", "new_directory", "New dir", show=False, id="new_directory"),
+        Binding("f5", "copy_to_other", "Copy", show=True, id="copy_to_other"),
+        Binding("f6", "move_to_other", "Move", show=True, id="move_to_other"),
+        Binding("f7", "new_directory", "New dir", show=True, id="new_directory"),
         Binding("shift+f7", "new_file", "New file", show=False, id="new_file"),
         Binding("shift+f6", "rename", "Rename", show=False, id="rename"),
-        Binding("f8", "delete", "Delete", show=False, id="delete"),
+        Binding("f8", "delete", "Delete", show=True, id="delete"),
         Binding("shift+f8", "delete_permanent", "Wipe", show=False, id="delete_permanent"),
-        # Viewing keys. Hidden from the footer for the same reason as the
-        # operation keys above; the viewer header repeats them while one is open.
+        # Viewing keys stay palette-only; the viewer header repeats them while
+        # one is open.
         Binding("f3", "view", "View", show=False, id="view"),
         Binding("alt+enter", "properties", "Info", show=False, id="properties"),
         Binding("f4", "edit", "Edit", show=False, id="edit"),

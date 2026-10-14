@@ -153,10 +153,27 @@ async def test_the_hint_bar_shows_the_page_keys_and_the_app_keys(tree: Path) -> 
         await wait_for_listing(pilot)
         hints = app.hints.hint_text()
         assert hints == format_hints(app.key_hints())
-        assert "Switch pane" in hints
-        assert "Palette" in hints
-        # the page comes first, so its keys are the ones the user reads first
-        assert app.key_hints()[0] == ("ctrl+t", "Switch pane")
+        # DC-019: the footer reads the frequent operations, then the global
+        # keys -- Palette, Switch pane, Quit -- and nothing else.
+        assert app.key_hints() == [
+            ("f5", "Copy"),
+            ("f6", "Move"),
+            ("f7", "New dir"),
+            ("f8", "Delete"),
+            ("ctrl+p", "Palette"),
+            ("ctrl+t", "Switch pane"),
+            ("ctrl+q", "Quit"),
+        ]
+        assert hints == (
+            "F5 Copy · F6 Move · F7 New dir · F8 Delete · Ctrl+P Palette"
+            " · Ctrl+T Switch pane · Ctrl+Q Quit"
+        )
+        # No stale hint: navigation, sort, filter, view and edit are
+        # palette-only now (DC-019).
+        for stale in ("Sort", "Reverse", "Filter", "Up", "View", "Edit", "Hidden"):
+            assert stale not in hints
+        # The footer stays one line at ~120 columns.
+        assert len(hints) <= 120
 
 
 @run_async
@@ -595,6 +612,7 @@ def test_a_key_is_shown_the_way_the_user_presses_it() -> None:
     assert format_key("ctrl+p") == "Ctrl+P"
     assert format_key("slash") == "/"
     assert format_key("backspace") == "⌫"
+    assert format_key("f5") == "F5"
 
 
 def test_hints_are_one_line_of_key_then_description() -> None:
