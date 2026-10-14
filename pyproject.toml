@@ -9,7 +9,7 @@ description = "Daylight Commander — a fast TUI file commander built with Textu
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Daylight Commander contributors" }]
+authors = [{ name = "Mauro Sanfilippo" }]
 keywords = ["tui", "file-manager", "commander", "textual", "terminal"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
