@@ -6,6 +6,15 @@ classic Norton Commander workflow — two independent directory panes, F-key fil
 operations, and keyboard-first navigation — to a modern, themable Python
 application.
 
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Daylight Commander](docs/screenshots/screenshot-1.png) | ![Daylight Commander](docs/screenshots/screenshot-2.png) |
+| ![Daylight Commander](docs/screenshots/screenshot-3.png) | ![Daylight Commander](docs/screenshots/screenshot-4.png) |
+| ![Daylight Commander](docs/screenshots/screenshot-5.png) | ![Daylight Commander](docs/screenshots/screenshot-6.png) |
+| ![Daylight Commander](docs/screenshots/screenshot-7.png) | |
+
 ## Features
 
 - **Dual-pane listing** — two independent directory panes with cursor
