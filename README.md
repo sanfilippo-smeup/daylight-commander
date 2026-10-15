@@ -35,30 +35,60 @@ application.
 
 ## Install
 
-Requires Python ≥ 3.13 and [uv](https://docs.astral.sh/uv/).
+Daylight Commander requires **Python ≥ 3.13**. It is distributed via GitHub
+(not PyPI); use [uv](https://docs.astral.sh/uv/) or `pip` to install it.
 
-Build a wheel and sdist from source:
+### Option 1 — install directly from GitHub (no checkout, no manual download)
+
+With uv:
 
 ```bash
-uv build
+uv tool install "git+https://github.com/sanfilippo-smeup/daylight-commander.git"
 ```
 
-Install as an isolated tool from a checkout of this repository:
+Or with pip:
 
 ```bash
-uv tool install .
+pip install "git+https://github.com/sanfilippo-smeup/daylight-commander.git"
 ```
 
-Run without installing anything:
+Then run `daylight`.
+
+### Option 2 — install from a release asset
+
+Download `daylight_commander-1.0.0-py3-none-any.whl` from the
+[latest release](https://github.com/sanfilippo-smeup/daylight-commander/releases/latest), then:
 
 ```bash
+uv tool install ./daylight_commander-1.0.0-py3-none-any.whl
+# or
+pip install ./daylight_commander-1.0.0-py3-none-any.whl
+```
+
+### Option 3 — build from a source checkout
+
+Clone the repository, then build or install locally:
+
+```bash
+git clone https://github.com/sanfilippo-smeup/daylight-commander.git
+cd daylight-commander
+uv build              # → dist/daylight_commander-1.0.0-py3-none-any.whl + .tar.gz
+uv tool install .     # install the local package as a tool
+```
+
+### Option 4 — run without installing
+
+```bash
+git clone https://github.com/sanfilippo-smeup/daylight-commander.git
+cd daylight-commander
 uv run daylight
 ```
 
 ## Quick start
 
 ```bash
-uv run daylight
+daylight              # if installed (options 1–3)
+uv run daylight       # from a source checkout (option 4)
 ```
 
 The TUI opens with two directory panes. Move the cursor with the arrow keys,
