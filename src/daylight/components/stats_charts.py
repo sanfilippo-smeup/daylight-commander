@@ -198,12 +198,20 @@ class ShareBar(Static):
 
 
 class CalendarHeatmap(Static):
-    """A ~12-week calendar heatmap: one column per week, one row per weekday."""
+    """A ~12-week calendar heatmap: one column per week, one row per weekday.
+
+    The grid is preceded by a reference-period caption and a month header row,
+    each row is prefixed with its weekday initial, and the legend maps the
+    shades to a numeric ``0 \u2026 peak`` scale so the pace of activity is
+    readable.
+    """
 
     #: How many weeks the calendar spans.
     WEEKS: ClassVar[int] = 12
     #: How many intensity levels a day can have, empty included.
     LEVELS: ClassVar[int] = 5
+    #: Row labels, Monday first.
+    WEEKDAYS: ClassVar[tuple[str, ...]] = ("M", "T", "W", "T", "F", "S", "S")
 
     def __init__(self) -> None:
         self.counts: Mapping[date, int] = {}
@@ -221,6 +229,17 @@ class CalendarHeatmap(Static):
         self.anchor = max(self.counts) if self.counts else date.today()
         self._redraw()
 
+    def window(self) -> tuple[date, date]:
+        """The inclusive ``(start, end)`` dates the grid covers.
+
+        ``start`` is the Monday of the oldest week, ``end`` the newest active
+        day (or today), so the caption always names the exact period shown.
+        """
+        end = self.anchor or date.today()
+        week_start = end - timedelta(days=end.weekday())
+        first = week_start - timedelta(weeks=self.WEEKS - 1)
+        return first, end
+
     def level_colors(self, theme: Theme) -> list[str]:
         """The cell colors, from empty to busiest: ``panel`` blended to ``success``."""
         return [
@@ -228,31 +247,49 @@ class CalendarHeatmap(Static):
             for step in range(self.LEVELS)
         ]
 
+    def _month_labels(self, first: date) -> list[str]:
+        """Per-week-column abbreviated month, blank where the month repeats."""
+        labels: list[str] = []
+        previous: str | None = None
+        for week in range(self.WEEKS):
+            label = (first + timedelta(weeks=week)).strftime("%b")
+            labels.append(label if label != previous else "")
+            previous = label
+        return labels
+
     def _redraw(self) -> None:
         theme = active_theme(self)
         colors = self.level_colors(theme)
         peak = max(self.counts.values(), default=0)
-        anchor = self.anchor or date.today()
-        week_start = anchor - timedelta(days=anchor.weekday())
-        first = week_start - timedelta(weeks=self.WEEKS - 1)
+        first, end = self.window()
+        caption = Text(
+            f"{self.WEEKS} weeks \u00b7 {first.isoformat()} \u2192 {end.isoformat()}",
+            style=theme.muted,
+        )
+        month_row = Text("  ")
+        for label in self._month_labels(first):
+            month_row.append(f"{label:>3}", style=theme.muted)
         canvas = Text()
         for weekday in range(7):
+            canvas.append(f"{self.WEEKDAYS[weekday]} ", style=theme.muted)
             for week in range(self.WEEKS):
                 day = first + timedelta(weeks=week, days=weekday)
-                if day > anchor:
-                    canvas.append("  ")
+                if day > end:
+                    canvas.append("   ")
                     continue
                 count = self.counts.get(day, 0)
                 level = 0
                 if count and peak:
                     level = 1 + min(self.LEVELS - 2, round(count / peak * (self.LEVELS - 2)))
-                canvas.append("  ", style=f"on {colors[level]}")
+                canvas.append("   ", style=f"on {colors[level]}")
             canvas.append("\n")
         legend = Text()
         for color in colors:
             legend.append("  ", style=f"on {color}")
-        legend.append("  less \u2192 more", style=theme.muted)
-        self.update(Group(canvas, legend))
+        legend.append("  0", style=theme.muted)
+        if peak:
+            legend.append(f"  \u2026  {peak}/day", style=theme.muted)
+        self.update(Group(caption, month_row, canvas, legend))
 
 
 class Histogram(Static):

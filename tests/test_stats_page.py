@@ -223,6 +223,29 @@ def test_the_heatmap_with_no_data_anchors_on_today() -> None:
     assert chart.anchor == date.today()
 
 
+def test_the_heatmap_reports_its_reference_period() -> None:
+    """The window spans 12 weeks ending at the newest activity day."""
+    chart = CalendarHeatmap()
+    day = date(2026, 3, 4)
+    chart.set_days({day: 3, day - timedelta(days=1): 1})
+    first, end = chart.window()
+    assert end == day
+    anchor_monday = day - timedelta(days=day.weekday())
+    assert first == anchor_monday - timedelta(weeks=11)
+
+
+def test_the_heatmap_month_labels_mark_only_new_months() -> None:
+    """A column is labelled only where its month differs from the one before."""
+    chart = CalendarHeatmap()
+    first = date(2026, 1, 5)  # a Monday
+    labels = chart._month_labels(first)
+    assert labels[0] == "Jan"
+    for week in range(1, 12):
+        month = (first + timedelta(weeks=week)).strftime("%b")
+        previous_month = (first + timedelta(weeks=week - 1)).strftime("%b")
+        assert (labels[week] == month) == (month != previous_month)
+
+
 def test_a_bar_chart_keeps_its_rows() -> None:
     chart = BarChart()
     chart.set_bars([(".py", 10), (".md", 5)])
