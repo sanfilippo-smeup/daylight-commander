@@ -133,6 +133,69 @@ page (`Ctrl+4`) and persisted per user to `$XDG_CONFIG_HOME/daylight/config.json
 defaults shown above; the footer and command palette always reflect the active
 bindings.
 
+## How this project was made
+
+Daylight Commander was built end-to-end by a human owner working with a
+multi-agent team, not by a single coding assistant. The owner defined the goal,
+the acceptance criteria, and every product decision; the agents did the
+implementation, verification, and review under a disciplined loop.
+
+**The team.** Work was coordinated through
+[Triad+](https://github.com/ainz-dg/triad-plus-engineering-loop), a lightweight
+engineering loop for coding agents that separates implementation, review, and
+orchestration. Three roles, each with its own model, worked on every feature:
+
+- **Coordinator** — the orchestrator. Broke the goal into bounded feature cards,
+  created an immutable assignment packet per card, governed the state
+  transitions, resolved developer/reviewer disagreements, and made the
+  evidence-based delivery decisions. Model: `deepseek-v4.1-flash`.
+- **Builder** — the developer. Implemented exactly one card at a time with the
+  smallest change that satisfied its acceptance criteria, plus focused unit
+  tests. Model: `glm-5.3-flash`.
+- **Critic** — the reviewer. Independently inspected each verified candidate and
+  approved, requested rework, or blocked it — never grading the same work it
+  wrote. Model: `deepseek-v4.1-flash`.
+
+The agents ran inside [OpenCode](https://opencode.ai), on Ollama-hosted models.
+
+**The workflow.** Each feature moved through a repeatable chain:
+
+1. The owner and Coordinator agreed a plan of bounded, testable feature cards
+   (DC-001 … DC-022) derived from a frozen PRD baseline.
+2. The Builder implemented one card, added tests, and reported precise claims.
+3. A deterministic verifier (`triad-verify`) recorded the real gate results —
+   `uv run ruff check .` and `uv run pytest -q` — as environment-derived
+   evidence. A claim that the tests passed was never accepted as proof.
+4. The Critic reviewed the candidate against its card, the diff, and the
+   verifier evidence, and issued an independent decision.
+5. On approval, the Coordinator committed exactly one commit per card and moved
+   to the next dependency-satisfied card; on rework, the work looped back to the
+   Builder.
+
+Roughly 22 cards were delivered this way (plus a handful of targeted fixes),
+with 559 passing tests and 14 UI snapshots guarded by the gates. When a card hit
+a real fork in the road — a stale baseline, a flaky performance test, an
+ambiguous acceptance criterion — work stopped and the owner decided; ordinary
+implementation disagreements were resolved by the loop. See
+[`docs/HANDOVER.md`](docs/HANDOVER.md) for the card-by-card delivery record.
+
+**The stack.** Python ≥ 3.13 packaged with [uv](https://docs.astral.sh/uv/);
+[Textual](https://github.com/Textualize/textual) for the TUI with styling kept
+in `.tcss` files; `black` for formatting, `ruff` for linting, and
+`pytest` + `pytest-textual-snapshot` for testing. Filesystem access is isolated
+behind `managers/` so the UI never touches disk directly.
+
+## Credits
+
+- **Triad+** — the engineering loop that structured how this project was
+  planned, implemented, verified, and reviewed — is created by
+  [**ainz-dg**](https://github.com/ainz-dg) and available at
+  [ainz-dg/triad-plus-engineering-loop](https://github.com/ainz-dg/triad-plus-engineering-loop)
+  (Apache-2.0). Many thanks for building and sharing it.
+- Built with [Textual](https://github.com/Textualize/textual),
+  [uv](https://docs.astral.sh/uv/), [Ruff](https://docs.astral.sh/ruff/), and
+  [pytest](https://docs.pytest.org/).
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
