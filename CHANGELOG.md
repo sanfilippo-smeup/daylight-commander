@@ -5,6 +5,42 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-10-16
+
+Documentation and specification patch. **No product-code changes** — the TUI
+behavior is identical to 1.0.0.
+
+### Added
+
+- `docs/HANDOVER.md` — a delivery handover covering the delivered scope, the
+  Triad+ control loop, run/verify commands, known risks, and the post-run
+  Evaluator+ result.
+- README sections: **"How this project was made"** (the multi-agent Triad+
+  workflow) and **"Credits"** (crediting [`ainz-dg`](https://github.com/ainz-dg)
+  for [Triad+](https://github.com/ainz-dg/triad-plus-engineering-loop)).
+- `specs/CHANGES-v3.md` — the PRD Revision 3 change manifest.
+
+### Changed
+
+- Re-baselined the PRD to **Revision 3** (`specs/PRD.md`) to bring the written
+  requirements in line with the owner follow-up cards DC-012…DC-022: the two-step
+  go-up (`Backspace` → `..`, `Enter` ascends), the footer/palette hint split,
+  visible selection marks, the viewer filling its tab, the hidden-files toggle
+  living in Settings, and the Norton/mc F-key keybinding table.
+
+### Fixed
+
+- FR-207 wording corrected: it now states that symlinks are **listed** as normal
+  entries; displaying a resolved link *target* and creating symlinks are
+  explicitly deferred past v1.
+- FR-301 wording corrected: YAML renders as plain text (YAML pretty-printing was
+  descoped).
+
+### Notes
+
+- Post-run **Evaluator+** re-assessment of the delivered result returned
+  **PASS**; the earlier finding (an over-claimed FR-207) was corrected here.
+
 ## [1.0.0] - 2026-10-14
 
 First stable release of **Daylight Commander**, a fast dual-pane TUI file

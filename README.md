@@ -179,6 +179,20 @@ ambiguous acceptance criterion — work stopped and the owner decided; ordinary
 implementation disagreements were resolved by the loop. See
 [`docs/HANDOVER.md`](docs/HANDOVER.md) for the card-by-card delivery record.
 
+**The post-run check — Evaluator+.** After the work was approved and delivered,
+the project also used Triad+'s optional **Evaluator+**: a fresh, *blind*
+assessment that runs in a clean context and sees only four things — the goal, the
+acceptance target, the final artifact, and the environment-derived verification
+evidence. It deliberately never sees the developer's or reviewer's reasoning, the
+attempt history, or the internal run records, so its judgement cannot be anchored
+to the story of how the work was done. It independently re-checked the delivered
+product against the PRD's acceptance criteria and reproduced the test/lint gates
+itself; the first pass caught an over-claim in the written requirements, which
+was corrected, and the re-run returned **PASS**. An Evaluator+ verdict is only a
+record: it can never reopen, rework, or rewrite an already-delivered result —
+it is a last, independent sanity check on the outcome, not a fourth member of the
+team.
+
 **The stack.** Python ≥ 3.13 packaged with [uv](https://docs.astral.sh/uv/);
 [Textual](https://github.com/Textualize/textual) for the TUI with styling kept
 in `.tcss` files; `black` for formatting, `ruff` for linting, and
