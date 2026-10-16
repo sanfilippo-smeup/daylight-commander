@@ -5,6 +5,30 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-16
+
+### Added
+
+- **Directory statistics dashboard** — a read-only **Stats** tab (`Ctrl+5`) that
+  shows the active directory as summary cards and dependency-free charts: disk
+  usage by content category, top file extensions, a modification-timeline
+  calendar heatmap + monthly bars, a size-distribution histogram, a permissions
+  breakdown, and a largest / oldest / newest insights list. Computed on a worker
+  thread with a safety cap (DC-023).
+- Stats-dashboard screenshot in the README gallery.
+
+### Changed
+
+- PRD re-baselined to **Revision 4** (`FR-700…FR-709`) with **ADR-013**
+  (dependency-free chart rendering + a `managers/stats.py` worker), recorded in
+  `specs/CHANGES-v4.md`.
+
+### Fixed
+
+- The modification calendar heatmap now reports its **reference period**
+  (start → end) with month/weekday labels, and a numeric activity **scale**
+  (`0 … N/day`) instead of an unlabelled "less → more" legend.
+
 ## [1.0.1] - 2026-10-16
 
 Documentation and specification patch. **No product-code changes** — the TUI
