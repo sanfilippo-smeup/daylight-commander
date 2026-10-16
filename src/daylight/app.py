@@ -34,6 +34,7 @@ from daylight.components.command_palette import DaylightCommandProvider, Palette
 from daylight.components.modules.file_list import FilesPage, LocationChanged
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.settings_page import SettingsPage
+from daylight.components.modules.stats_page import StatsPage
 from daylight.components.modules.viewers_page import ViewersPage
 from daylight.components.shell import KeyHintBar, ShellHeader, format_key
 from daylight.config import DEFAULT_KEYBINDINGS
@@ -48,6 +49,7 @@ PAGE_LABELS: dict[str, str] = {
     "viewers": "Viewers",
     "properties": "Properties",
     "settings": "Settings",
+    "stats": "Stats",
 }
 
 #: The page the app starts on.
@@ -78,6 +80,7 @@ class DaylightApp(App[None]):
         "styles/files.tcss",
         "styles/operations.tcss",
         "styles/viewer.tcss",
+        "styles/stats.tcss",
     ]
     BINDINGS = [
         # The only two app-wide hints the footer has room for; the tab keys are
@@ -115,6 +118,13 @@ class DaylightApp(App[None]):
             show=False,
             id="goto_settings",
         ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_stats"],
+            "goto_stats",
+            "Stats",
+            show=False,
+            id="goto_stats",
+        ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
     COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
@@ -126,6 +136,7 @@ class DaylightApp(App[None]):
         "viewers": ViewersPage,
         "properties": PropertiesPage,
         "settings": SettingsPage,
+        "stats": StatsPage,
     }
 
     #: App-level actions offered by the palette: ``(title, action, description)``.
@@ -134,6 +145,7 @@ class DaylightApp(App[None]):
         ("Go to Viewers", "goto_viewers", "Read the file across the whole pane"),
         ("Go to Properties", "goto_properties", "Describe the entry across the whole pane"),
         ("Go to Settings", "goto_settings", "Theme and keybindings"),
+        ("Go to Stats", "goto_stats", "Directory statistics for the active pane"),
         ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
     )
 
@@ -344,6 +356,11 @@ class DaylightApp(App[None]):
         elif isinstance(page, SettingsPage):
             page.sync_themes()
             page.focus_themes()
+        elif isinstance(page, StatsPage):
+            # A fresh show recomputes only what the per-directory cache has not
+            # already got (DC-023, AC6); the page is focusable so ctrl+r works.
+            page.refresh_stats()
+            page.focus()
 
     @on(Tabs.TabActivated)
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -358,6 +375,12 @@ class DaylightApp(App[None]):
         """Follow the listing's path into the persistent header (AC1)."""
         del event
         self.update_path()
+        # The Stats tab follows the active pane's directory while it is the one
+        # on screen (DC-023, AC6); hidden, it refreshes on its next show.
+        if self.active_page == "stats":
+            stats = self._pages.get("stats")
+            if isinstance(stats, StatsPage):
+                stats.refresh_stats()
 
     def update_path(self) -> None:
         """Show the directory being browsed in the header."""
@@ -384,6 +407,10 @@ class DaylightApp(App[None]):
     def action_goto_settings(self) -> None:
         """``ctrl+4``: show the Settings page."""
         self.show_page("settings")
+
+    def action_goto_stats(self) -> None:
+        """``ctrl+5``: show the Stats page (DC-023)."""
+        self.show_page("stats")
 
     def action_next_theme(self) -> None:
         """Switch to the next theme in the catalogue."""

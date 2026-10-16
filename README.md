@@ -30,6 +30,10 @@ application.
 - **Runtime theming** — switch color themes live from the settings page.
 - **Properties page** — detailed file metadata (size, permissions, owner,
   checksums) with per-field copy.
+- **Stats dashboard** — a read-only `Ctrl+5` tab that summarizes the active
+  pane's directory: total size and counts, disk usage by content category,
+  top extensions, a modification calendar heatmap, a size histogram,
+  permission masks, and the largest / oldest / newest files.
 - **External launches** — open files with the system handler, edit in
   `$EDITOR`, and open URLs found in files with the default browser.
 

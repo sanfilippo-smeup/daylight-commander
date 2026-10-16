@@ -21,6 +21,7 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "goto_viewers": "ctrl+2",
     "goto_properties": "ctrl+3",
     "goto_settings": "ctrl+4",
+    "goto_stats": "ctrl+5",
     "up": "up",
     "down": "down",
     "switch_panel": "ctrl+t",

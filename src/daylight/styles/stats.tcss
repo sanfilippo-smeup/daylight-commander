@@ -1,0 +1,43 @@
+/* Stats page (DC-023): dashboard cards and charts. Colors arrive as $name
+   variables from daylight.themes.get_css_variables(); no color literal here. */
+
+#stats-page {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#stats-title {
+    height: 1;
+    color: $accent;
+    background: $surface;
+    padding: 0 1;
+    text-style: bold;
+}
+
+.stats-summary {
+    height: auto;
+}
+
+.summary-card {
+    width: 1fr;
+    height: 5;
+    background: $panel;
+    border: round $secondary;
+    padding: 0 1;
+}
+
+.stats-row {
+    height: auto;
+}
+
+BarChart,
+ShareBar,
+CalendarHeatmap,
+Histogram,
+.insights {
+    width: 1fr;
+    height: auto;
+    background: $panel;
+    border: round $secondary;
+    padding: 0 1;
+}

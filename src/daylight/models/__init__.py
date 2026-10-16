@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Mapping
 
 __all__ = [
     "AppConfig",
     "DirEntry",
+    "DirectoryStats",
     "FileEntry",
     "FileProperties",
+    "FileStat",
     "Theme",
     "ViewDocument",
     "VIEW_KINDS",
@@ -174,3 +177,57 @@ class AppConfig:
     sort_key: str = "name"
     sort_reverse: bool = False
     keybindings: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FileStat:
+    """One file in a statistics insight list (top-N, oldest/newest) (DC-023).
+
+    Produced only by :mod:`daylight.managers.stats`, so the chart code never
+    reads ``stat`` itself.
+    """
+
+    path: Path
+    name: str
+    size: int
+    modified: float
+
+
+@dataclass(frozen=True)
+class DirectoryStats:
+    """Recursive statistics of one directory tree (DC-023, ADR-013).
+
+    Built only by :func:`daylight.managers.stats.build_stats`; the Stats page
+    renders it and never touches the disk for statistics. The mapping and tuple
+    fields are the chart inputs. ``partial`` is True when the entry cap or the
+    time budget stopped the walk early, so every card built from it can say so.
+
+    Counts are of the tree *below* ``root``: the root itself is not an entry,
+    symlinks are counted but never followed or sized, and only regular files
+    contribute size, timeline and insight data.
+    """
+
+    root: Path
+    total_size: int
+    file_count: int
+    directory_count: int
+    hidden_count: int
+    symlink_count: int
+    scanned_entries: int
+    partial: bool
+    elapsed: float
+    category_sizes: Mapping[str, int]
+    extension_sizes: Mapping[str, int]
+    extension_counts: Mapping[str, int]
+    size_buckets: Mapping[str, int]
+    permission_counts: Mapping[str, int]
+    daily_counts: Mapping[date, int]
+    monthly_counts: Mapping[str, int]
+    largest: tuple[FileStat, ...]
+    oldest: FileStat | None
+    newest: FileStat | None
+
+    @property
+    def dirs_files_ratio(self) -> str:
+        """The ``dirs:files`` ratio the summary card shows, e.g. ``2:5``."""
+        return f"{self.directory_count}:{self.file_count}"
