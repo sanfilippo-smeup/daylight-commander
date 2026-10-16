@@ -5,7 +5,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft — Revision 3 |
+| Status | Draft — Revision 4 |
 | Product | Terminal file manager (TUI) |
 | Target users | Developers / technical users |
 | Platform | Python >= 3.13, terminal (256-color / truecolor) |
@@ -156,6 +156,30 @@ and servers.
 - **FR-601** — Config stored per-user (e.g. `~/.config/daylight/`); editable
   from the UI where practical.
 
+### 5.7 Directory statistics dashboard (FR-700)
+- **FR-701** — A read-only **Stats** tab shows statistics for the directory
+  being browsed (the active pane's directory), reachable from the tab strip, the
+  command palette, and `Ctrl+5`.
+- **FR-702** — **Summary cards**: total size (recursive), file count, directory
+  count, directories-to-files ratio, hidden count, and symlink count.
+- **FR-703** — **Disk usage by content category**: total size grouped into
+  categories (images, video, audio, documents, code, archives, other) with a
+  share visualization, plus the top file extensions by count/size.
+- **FR-704** — **Modification timeline**: a calendar heatmap of the last ~12
+  weeks plus a monthly bar chart of entry modification times.
+- **FR-705** — **Size distribution**: a histogram of file sizes across size
+  buckets.
+- **FR-706** — **Permissions breakdown**: entry counts grouped by permission
+  mask.
+- **FR-707** — **Insights**: the top-N largest files, the heaviest directories,
+  and the oldest and newest entries.
+- **FR-708** — Statistics are computed off the UI thread (non-blocking). A
+  recursive walk is bounded by a safety cap (entry count and/or time budget);
+  when the cap is hit, the affected cards are marked "(partial)".
+- **FR-709** — The dashboard refreshes when the tab is shown or the active
+  directory changes, and via an explicit refresh action; results are cached per
+  directory.
+
 ## 6. Screens / views
 
 | # | Screen | Purpose |
@@ -167,6 +191,7 @@ and servers.
 | 5 | **External file launcher** | Hand off a file to the OS default app |
 | 6 | **External link launcher** | Hand off a URL to the default browser |
 | 7 | **Settings** | Theme, keybindings, defaults |
+| 8 | **Stats** | Directory statistics dashboard |
 
 ## 7. Proposed default keybindings
 
@@ -196,6 +221,7 @@ and servers.
 | `/` | Filter / search |
 | `Ctrl+P` | Command palette |
 | `Ctrl+T` | Switch pane |
+| `Ctrl+5` | Stats |
 | `Ctrl+Q` | Quit |
 
 > All bindings are configurable via `config`. The footer shows the

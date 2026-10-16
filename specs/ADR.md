@@ -268,3 +268,36 @@ renders the indicator.
 ### Consequences
 - Keyboard sorting (`s`/`r`) remains and stays in sync with the header indicator.
 - The table builder returns sort key + direction so the widget can render the arrow.
+
+## ADR-013 — Directory statistics dashboard: dependency-free charts and a stats worker
+
+### Context
+The owner wants a read-only "Stats" tab showing the current directory as a
+dashboard of cards and charts (bar, share/donut, calendar heatmap, histogram).
+The project's rules: filesystem access only through `managers/` (ADR-003), all
+colors from theme tokens (ADR-004), and no new dependencies without
+authorization.
+
+### Decision
+- Add a Stats page as a fifth tab (`components/modules/stats_page.py`),
+  wired through the existing page/tab/palette registry and `Ctrl+5`.
+- Statistics are computed in a new `managers/stats.py`: a recursive walk with a
+  safety cap (entry count + elapsed budget) that never touches the UI. The
+  computation runs on a Textual worker thread
+  (`@work(thread=True, exclusive=True, group="stats")`), and results are cached
+  per directory.
+- Charts are rendered dependency-free with Rich primitives — block-run bars, a
+  colored-cell calendar heatmap, and a donut / 100%-stacked share bar — using
+  colors read from the `Theme` model. No plotting library is added.
+- The dashboard recomputes when shown, when the active directory changes while
+  visible, and via an explicit refresh binding.
+
+### Consequences
+- No new runtime dependency; packaging is unchanged.
+- Recursive scans of very large trees stop at the cap and are labeled "(partial)".
+- Chart fidelity is terminal-grade (block/braille), not an axis plotting library.
+
+### Alternatives considered
+- `textual-plotext`/`plotext`: real axes and line plots, but adds a dependency
+  and does not natively cover calendar heatmaps or pie/donut shares; rejected to
+  keep the project dependency-free.
