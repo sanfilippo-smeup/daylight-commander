@@ -5,7 +5,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft — Revision 2 |
+| Status | Draft — Revision 3 |
 | Product | Terminal file manager (TUI) |
 | Target users | Developers / technical users |
 | Platform | Python >= 3.13, terminal (256-color / truecolor) |
@@ -42,7 +42,7 @@ previews, and modern theming.
 ## 3. Target users
 
 **Persona: the terminal developer** — lives in the shell, uses `git`, `vim`,
-`tmux`; wants a file manager that respects muscle memory (Vim-style `hjkl`),
+`tmux`; wants a file manager that respects keyboard-first muscle memory,
 supports the mouse when convenient, and never gets in the way.
 
 Secondary: ops engineers and power users who manage many files across projects
@@ -50,8 +50,9 @@ and servers.
 
 ## 4. Core principles
 
-1. **Discoverable** — every binding is shown in the footer; the command palette
-   lists every action.
+1. **Discoverable** — the footer shows the high-frequency global operations,
+   page headers show contextual hints, and the command palette exposes **every**
+   action with fuzzy search; nothing is reachable only by a memorized key.
 2. **Keyboard-first, mouse-friendly** — full operation via keyboard; mouse
    clicking, scrolling, and selection also work.
 3. **Preview-first** — see file contents before deciding to open them.
@@ -64,7 +65,11 @@ and servers.
 
 ### 5.1 File listing / navigation (FR-100)
 - **FR-101** — List the contents of a directory in a sortable, filterable table.
-- **FR-102** — Navigate directories with `Enter`, go up with `..`/Backspace.
+- **FR-102** — Navigate directories with `Enter`. Going up is an explicit
+  two-step: `Backspace` moves the cursor to the `..` parent row (clearing any
+  active filter first so the row is reachable) without changing directory, and
+  `Enter` on that row ascends to the parent. At the filesystem root there is no
+  `..` row and `Backspace` is a no-op.
 - **FR-103** — Dual-pane layout by default: a directory panel on the left and a
   two-tab tabsheet on the right. Tab 1 is the directory view (always visible);
   Tab 2 is the file viewer, shown only when a text file is opened. The left panel
@@ -79,7 +84,9 @@ and servers.
   the header.
 - **FR-106** — Show file metadata in the listing: size (human-readable), modified
   time, permissions, and an icon/emoji for the type.
-- **FR-107** — Show hidden files via a toggle; remember the preference.
+- **FR-107** — Show hidden files via a toggle; remember the preference. The
+  toggle lives in Settings → Defaults → Hidden files and persists in the config;
+  there is no dedicated runtime keybinding for it.
 - **FR-108** — Breadcrumb / path bar showing the current directory.
 - **FR-109** — **Type-ahead prefix navigation**: while the left panel is focused,
   each keystroke moves the cursor to the first entry whose name starts with the
@@ -91,14 +98,21 @@ and servers.
 ### 5.2 File operations (FR-200)
 - **FR-201** — Copy, move, rename, and delete files and directories.
 - **FR-202** — Create files and directories.
-- **FR-203** — Multi-select for batch operations (space toggles selection).
+- **FR-203** — Multi-select for batch operations (`Space` toggles selection).
+  Selected rows are visibly marked (bold, with a leading `*`), and the mark
+  survives a re-sort or re-filter.
 - **FR-204** — Destructive operations show a confirmation modal.
 - **FR-205** — Long operations run non-blocking with a progress indicator and
   cancel option.
 - **FR-206** — Delete moves to OS trash when available; permanent delete is an
   explicit separate action.
-- **FR-207** — Symlink creation and display (show link targets).
-- **FR-208** — Change permissions / ownership (chmod/chown) from a properties view.
+- **FR-207** — List symlinks as entries in the directory listing; they are
+  navigable and operable like other entries. Showing a resolved link *target*
+  and creating symlinks from the UI are **deferred** past v1 (never scheduled in
+  a delivery card).
+- **FR-208** — Change permissions / ownership (chmod/chown) from a properties
+  view. **Deferred past v1** (explicitly out of scope in DC-003); the properties
+  view is read-only for permissions and ownership.
 
 ### 5.3 Viewers (FR-300)
 - **FR-301** — **Plain text / code viewer**: display UTF-8 text with line
@@ -115,7 +129,10 @@ and servers.
   open in the OS default viewer (e.g. Preview on macOS).
 - **FR-306** — **Tab preview**: the internal viewer opens in the right
   tabsheet's Viewer tab (Tab 2) — focused on the left tree, the viewer is on the
-  right. It is shown only when a text file is opened and is never fullscreen.
+  right. It is shown only when a text file is opened and is never fullscreen
+  (it fills the tab, not the whole app). The preview fills the full vertical
+  height of the tab and stays visible while the left listing is navigated:
+  moving the cursor never switches the right panel away from its Viewer tab.
 
 ### 5.4 External launchers (FR-400)
 - **FR-401** — **File launcher**: open a file with the OS default application
@@ -155,23 +172,35 @@ and servers.
 
 | Key | Action |
 | --- | --- |
-| `hjkl` / arrows | Move cursor |
-| `Enter` | Open / enter directory |
-| `Backspace` | Go to parent directory |
+| arrows | Move cursor |
+| type letters | Type-ahead: jump to the first entry whose name has the typed prefix |
+| `Enter` | Open / enter directory (or ascend when on the `..` row) |
+| `Backspace` | Move cursor to the `..` parent row (clears an active filter first); no-op at root |
 | `Space` | Toggle selection |
-| `F3` or `v` | View in inactive panel (md/json/yaml/text inline; binary → OS viewer) |
-| `F4` or `e` | Edit (text → vim/`$EDITOR`, non-text → OS default app) |
-| `F5` or `c` | Copy |
-| `F6` or `m` | Move |
-| `F7` or `n` | New file/dir |
-| `F8` or `d` | Delete |
-| `F9` or `o` | Open externally |
+| `F3` | View (md/json/yaml/text inline; binary → OS viewer) |
+| `F4` | Edit (text → `$EDITOR`, non-text → OS default app) |
+| `F5` | Copy |
+| `F6` | Move |
+| `Shift+F6` | Rename |
+| `F7` | New directory |
+| `Shift+F7` | New file |
+| `F8` | Delete (to trash) |
+| `Shift+F8` | Wipe (delete permanently) |
+| `F9` | Open externally (file or URL) |
+| `Alt+Enter` | Properties |
+| `Ctrl+S` | Cycle sort column |
+| `Ctrl+R` | Reverse sort order |
+| `Ctrl+A` / `Ctrl+Shift+A` | Select all / clear selection |
+| `Ctrl+C` | Copy field (properties view) |
+| `Ctrl+G` | Next match (viewer find) |
 | `/` | Filter / search |
 | `Ctrl+P` | Command palette |
-| `Ctrl+T` | New tab / pane toggle |
+| `Ctrl+T` | Switch pane |
 | `Ctrl+Q` | Quit |
 
-> All bindings are configurable via `config`; the footer always shows the active set.
+> All bindings are configurable via `config`. The footer shows the
+> high-frequency operations, page headers show contextual hints, and the
+> command palette (`Ctrl+P`) exposes every action.
 
 ## 8. Non-functional requirements
 
