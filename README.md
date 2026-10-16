@@ -13,7 +13,7 @@ application.
 | ![Daylight Commander](docs/screenshots/screenshot-1.png) | ![Daylight Commander](docs/screenshots/screenshot-2.png) |
 | ![Daylight Commander](docs/screenshots/screenshot-3.png) | ![Daylight Commander](docs/screenshots/screenshot-4.png) |
 | ![Daylight Commander](docs/screenshots/screenshot-5.png) | ![Daylight Commander](docs/screenshots/screenshot-6.png) |
-| ![Daylight Commander](docs/screenshots/screenshot-7.png) | |
+| ![Daylight Commander](docs/screenshots/screenshot-7.png) | ![Daylight Commander — Stats dashboard](docs/screenshots/screenshot-8.jpg) |
 
 ## Features
 
