@@ -117,7 +117,34 @@ documented in [`README.md`](../README.md#install).
   reports 16 files that would reformat; `black` is not a gate).
 - **Not performed (owner decision):** PyPI publication, CI, and any additional
   distribution channels beyond the GitHub release.
-- **Evaluator+** is disabled; no post-run evaluation was configured.
+- **Evaluator+:** enabled (`ollama-cloud/gpt-oss:120b`); post-run verdict PASS —
+  see [the section below](#evaluator-post-run-assessment).
+
+## Evaluator+ (post-run assessment)
+
+After delivery, **Evaluator+** (Triad+'s optional fresh, blind, post-run review —
+not a fourth role and never a repair controller) assessed the result against the
+PRD. Before it ran, the PRD was re-baselined to **Revision 3**
+(`specs/PRD.md`, `specs/CHANGES-v3.md`) to reflect the owner follow-up cards
+DC-012…DC-022.
+
+- **Verdict: PASS** — result record in the control workspace
+  (`artifacts/evaluator-plus/DC-EVAL-002.json`).
+- Evaluated candidate: commit that includes Revision 3 of the PRD; the
+  environment-derived gates were reproduced independently —
+  `uv run ruff check .` clean and `uv run pytest -q` 559 passed (14 snapshots).
+- One intermittent snapshot-timing flake was observed during evaluation
+  (`test_viewer_search_snapshot`), with byte-identical expected/actual frames —
+  not a product defect.
+- An earlier evaluation returned FAIL against an uncommitted, over-claimed
+  revision; it was corrected (FR-207 now states only that symlink *listing* is
+  delivered; resolved link-target display and symlink creation are deferred),
+  and the evaluation was re-run to PASS.
+- Owner-accepted deferrals excluded from failure counting: FR-207 link-target
+  display + symlink creation, FR-208 chmod/chown (out of scope in DC-003), and
+  YAML pretty-printing (YAML renders as plain text).
+
+An Evaluator+ verdict never reopens or modifies the delivered run.
 
 ## Owner-controlled items
 
@@ -137,5 +164,6 @@ documented in [`README.md`](../README.md#install).
 
 ---
 
-This handover reflects the project state at commit `2600a59` plus the
-documentation and Triad+ upgrade changes made on 2026-10-16.
+This handover reflects the delivered v1.0.0 project state, plus the
+documentation and Triad+ 1.18.0 upgrade changes and the PRD Revision 3
+re-baseline (with the post-run Evaluator+ PASS) made on 2026-10-16.
