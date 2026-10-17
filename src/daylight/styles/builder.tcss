@@ -1,0 +1,82 @@
+/* Builder page (DC-025): prompt, agent transcript, question panel, live
+   preview, saved dashboards. Colors arrive as $name variables from
+   daylight.themes.get_css_variables(); no color literal here (ADR-004). */
+
+#builder-page {
+    height: 1fr;
+    padding: 0 1;
+    layout: vertical;
+}
+
+#builder-prompt {
+    height: 3;
+    margin-bottom: 1;
+}
+
+.builder-columns {
+    height: 1fr;
+}
+
+.builder-column {
+    width: 1fr;
+    height: 1fr;
+    layout: vertical;
+}
+
+#builder-transcript {
+    height: 1fr;
+    background: $panel;
+    border: round $secondary;
+    padding: 0 1;
+}
+
+.builder-user {
+    color: $accent;
+    margin-top: 1;
+}
+
+.builder-assistant {
+    color: $foreground;
+    margin-top: 1;
+}
+
+.builder-system {
+    color: $muted;
+    margin-top: 1;
+}
+
+#builder-question {
+    height: auto;
+    max-height: 14;
+    background: $panel;
+    border: round $warning;
+    padding: 0 1;
+    display: none;
+}
+
+#builder-question-options {
+    height: auto;
+    max-height: 6;
+}
+
+#builder-question-custom {
+    height: 3;
+}
+
+#builder-preview {
+    height: 1fr;
+    background: $panel;
+    border: round $secondary;
+    padding: 0 1;
+}
+
+#builder-preview-text {
+    color: $foreground;
+}
+
+#builder-dashboards {
+    height: 8;
+    background: $panel;
+    border: round $secondary;
+    padding: 0 1;
+}

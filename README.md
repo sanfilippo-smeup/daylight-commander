@@ -34,6 +34,13 @@ application.
   pane's directory: total size and counts, disk usage by content category,
   top extensions, a modification calendar heatmap, a size histogram,
   permission masks, and the largest / oldest / newest files.
+- **AI dashboard builder** — a `Ctrl+6` Builder tab where you describe a
+  dashboard in natural language; an embedded `opencode` agent writes the
+  Python (asking clarifying questions when it needs to), and the generated
+  script runs in a sandbox with its output streamed live into a preview pane.
+  Dashboards are saved and re-run with `Ctrl+S` / `Ctrl+L` / `Ctrl+R`.
+  Requires the `opencode` CLI; without it the tab shows a hint and the rest
+  of the app is unaffected.
 - **External launches** — open files with the system handler, edit in
   `$EDITOR`, and open URLs found in files with the default browser.
 

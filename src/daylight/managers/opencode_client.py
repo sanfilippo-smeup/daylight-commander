@@ -15,7 +15,11 @@ injectable transport callable (``(method, url, body) -> (status, body)``) so
 tests never open a socket; the default transport uses :mod:`urllib.request`
 only -- no third-party HTTP dependency (ADR-014). :meth:`stream_events` is a
 tolerant parser over an injected SSE line stream: malformed or unknown lines
-are skipped, never raised.
+are skipped, never raised. :meth:`open_event_stream` is the manager-level
+opener for that line stream (``GET /event``, DC-025): it is the only place a
+socket is opened for events, so the UI never does (FR-808), and connection
+failures surface as :class:`OpenCodeError` (DC-024 review F1) instead of
+escaping as raw :class:`urllib.error.URLError`.
 
 All process, HTTP and filesystem access lives here in the managers layer
 (FR-808, ADR-003): the UI only sees the frozen models from
@@ -43,6 +47,7 @@ from daylight.models import BuilderEvent, BuilderOption, BuilderQuestion
 
 __all__ = [
     "DEFAULT_SERVE_COMMAND",
+    "EventStreamOpener",
     "OpenCodeClient",
     "OpenCodeError",
     "OpenCodeServer",
@@ -55,6 +60,12 @@ logger = logging.getLogger("daylight.managers.opencode_client")
 #: ``body`` is the encoded JSON payload or ``None``, returning the HTTP status
 #: and the raw response body. Tests inject a callable and never open a socket.
 Transport = Callable[[str, str, bytes | None], tuple[int, bytes]]
+
+#: Signature of the injectable SSE opener: ``url -> iterator of raw lines``.
+#: The opener connects eagerly (a plain callable, not a generator), so a
+#: connection failure raises from the call that opens the stream. Tests inject
+#: a callable and never open a socket.
+EventStreamOpener = Callable[[str], Iterator[str]]
 
 #: Default ``opencode serve`` argv: loopback host, ephemeral port (the server
 #: prints the URL it picked, which :class:`OpenCodeServer` discovers).
@@ -86,6 +97,29 @@ def _urllib_transport(method: str, url: str, body: bytes | None) -> tuple[int, b
             return int(response.status), response.read()
     except urllib.error.HTTPError as error:
         return int(error.code), error.read()
+
+
+def _urllib_event_opener(url: str) -> Iterator[str]:
+    """Default SSE opener: ``GET url`` over urllib, decoded line by line.
+
+    A plain function rather than a generator, so the connection opens eagerly
+    and a connection failure surfaces from the call that opens the stream, not
+    from the first iteration. The response is closed when the line iterator is
+    exhausted or abandoned.
+    """
+    request = urllib.request.Request(url, method="GET")
+    return _response_lines(urllib.request.urlopen(request))
+
+
+def _response_lines(response: Any) -> Iterator[str]:
+    """Yield the body of an open response as decoded text lines, then close it."""
+    try:
+        for raw in response:
+            yield raw.decode("utf-8", "replace")
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 class OpenCodeServer:
@@ -358,6 +392,26 @@ class OpenCodeClient:
         if not idle_seen:
             yield BuilderEvent(kind="idle")
 
+    def open_event_stream(self, *, opener: EventStreamOpener | None = None) -> Iterator[str]:
+        """Open the server's SSE event stream and yield its raw lines (DC-025).
+
+        The manager-level opener for ``GET /event`` (FR-808): the UI consumes
+        the returned lines through :meth:`stream_events` and never opens a
+        socket itself. The connection is opened eagerly, so a connection
+        failure -- refused, unreachable, or an HTTP error status -- raises
+        :class:`OpenCodeError` from this call (DC-024 review F1) instead of
+        leaking a :class:`urllib.error.URLError`. The stream stays open until
+        the server closes it or the iterator is abandoned.
+        """
+        url = f"{self._base_url}/event"
+        open_lines = opener if opener is not None else _urllib_event_opener
+        try:
+            return open_lines(url)
+        except urllib.error.URLError as error:
+            raise OpenCodeError(
+                f"cannot open the event stream at {url}: {error.reason}"
+            ) from error
+
     def _request(
         self,
         method: str,
@@ -371,7 +425,12 @@ class OpenCodeClient:
         if query:
             url = f"{url}?{urllib.parse.urlencode(query)}"
         payload = None if body is None else json.dumps(body).encode("utf-8")
-        status, raw = self._transport(method, url, payload)
+        try:
+            status, raw = self._transport(method, url, payload)
+        except urllib.error.URLError as error:
+            # A connection failure (refused, unreachable, DNS) must reach the
+            # UI as an OpenCodeError it can show, not a raw URLError (F1).
+            raise OpenCodeError(f"{method} {path} failed: {error.reason}") from error
         if status < 200 or status >= 300:
             detail = raw[:200].decode("utf-8", "replace")
             raise OpenCodeError(f"{method} {path} failed with HTTP {status}: {detail}")

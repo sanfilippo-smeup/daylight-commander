@@ -31,6 +31,7 @@ from textual.widgets import Tabs
 from daylight import themes
 from daylight.components import file_table
 from daylight.components.command_palette import DaylightCommandProvider, PaletteCommand
+from daylight.components.modules.builder_page import BuilderPage
 from daylight.components.modules.file_list import FilesPage, LocationChanged
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.settings_page import SettingsPage
@@ -50,6 +51,7 @@ PAGE_LABELS: dict[str, str] = {
     "properties": "Properties",
     "settings": "Settings",
     "stats": "Stats",
+    "builder": "Builder",
 }
 
 #: The page the app starts on.
@@ -81,6 +83,7 @@ class DaylightApp(App[None]):
         "styles/operations.tcss",
         "styles/viewer.tcss",
         "styles/stats.tcss",
+        "styles/builder.tcss",
     ]
     BINDINGS = [
         # The only two app-wide hints the footer has room for; the tab keys are
@@ -125,6 +128,13 @@ class DaylightApp(App[None]):
             show=False,
             id="goto_stats",
         ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_builder"],
+            "goto_builder",
+            "Builder",
+            show=False,
+            id="goto_builder",
+        ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
     COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
@@ -137,6 +147,7 @@ class DaylightApp(App[None]):
         "properties": PropertiesPage,
         "settings": SettingsPage,
         "stats": StatsPage,
+        "builder": BuilderPage,
     }
 
     #: App-level actions offered by the palette: ``(title, action, description)``.
@@ -146,6 +157,7 @@ class DaylightApp(App[None]):
         ("Go to Properties", "goto_properties", "Describe the entry across the whole pane"),
         ("Go to Settings", "goto_settings", "Theme and keybindings"),
         ("Go to Stats", "goto_stats", "Directory statistics for the active pane"),
+        ("Go to Builder", "goto_builder", "Build a dashboard with AI"),
         ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
     )
 
@@ -361,6 +373,11 @@ class DaylightApp(App[None]):
             # already got (DC-023, AC6); the page is focusable so ctrl+r works.
             page.refresh_stats()
             page.focus()
+        elif isinstance(page, BuilderPage):
+            # The keyboard goes straight to the prompt, so the user can type
+            # the moment the tab opens (DC-025); its ctrl+s/l/r keys bubble
+            # from the focused input to the page.
+            page.focus_prompt()
 
     @on(Tabs.TabActivated)
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -411,6 +428,10 @@ class DaylightApp(App[None]):
     def action_goto_stats(self) -> None:
         """``ctrl+5``: show the Stats page (DC-023)."""
         self.show_page("stats")
+
+    def action_goto_builder(self) -> None:
+        """``ctrl+6``: show the Builder page (DC-025)."""
+        self.show_page("builder")
 
     def action_next_theme(self) -> None:
         """Switch to the next theme in the catalogue."""

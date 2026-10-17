@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from daylight.managers.opencode_client import (
     OpenCodeClient,
     OpenCodeError,
     OpenCodeServer,
+    _urllib_event_opener,
     _urllib_transport,
 )
 from daylight.models import BuilderEvent, BuilderOption, BuilderQuestion
@@ -383,6 +385,101 @@ def test_stream_events_on_empty_stream_yields_idle() -> None:
     client = OpenCodeClient(BASE)
 
     assert list(client.stream_events([])) == [BuilderEvent(kind="idle")]
+
+
+# -- client: manager-level SSE event-stream opener (DC-025, F1/F3) ------------
+
+
+def test_open_event_stream_returns_the_opener_lines() -> None:
+    lines = ["data: one\n", "\n", "data: two\n"]
+
+    def fake_opener(url: str) -> Iterator[str]:
+        assert url == f"{BASE}/event"
+        return iter(lines)
+
+    client = OpenCodeClient(BASE)
+
+    assert list(client.open_event_stream(opener=fake_opener)) == lines
+
+
+def test_open_event_stream_wraps_connection_errors() -> None:
+    """A URLError from the opener surfaces as OpenCodeError (F1)."""
+
+    def refusing_opener(url: str) -> Iterator[str]:
+        del url
+        raise urllib.error.URLError("connection refused")
+
+    client = OpenCodeClient(BASE)
+
+    with pytest.raises(OpenCodeError, match="connection refused"):
+        client.open_event_stream(opener=refusing_opener)
+
+
+def test_open_event_stream_feeds_stream_events() -> None:
+    lines = sse(text_event("hi"))
+    client = OpenCodeClient(BASE)
+
+    events = list(
+        client.stream_events(client.open_event_stream(opener=lambda url: iter(lines)))
+    )
+
+    assert events == [BuilderEvent(kind="text", text="hi"), BuilderEvent(kind="idle")]
+
+
+class _FakeStreamResponse:
+    """A byte-line response like ``http.client.HTTPResponse`` in a SSE GET."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.closed = False
+
+    def __iter__(self) -> Iterator[bytes]:
+        return iter(self._chunks)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_default_event_opener_decodes_response_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = _FakeStreamResponse([b"data: 1\n", b"\n", b"data: 2\n"])
+    captured: dict[str, urllib.request.Request] = {}
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float | None = None) -> object:
+        captured["request"] = request
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    lines = list(_urllib_event_opener(f"{BASE}/event"))
+
+    assert lines == ["data: 1\n", "\n", "data: 2\n"]
+    assert captured["request"].method == "GET"
+    assert captured["request"].full_url == f"{BASE}/event"
+    assert response.closed  # the iterator closes the response when exhausted
+
+
+def test_default_event_opener_wraps_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(request: urllib.request.Request, timeout: float | None = None) -> object:
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    client = OpenCodeClient(BASE)
+
+    with pytest.raises(OpenCodeError, match="cannot open the event stream"):
+        client.open_event_stream()
+
+
+def test_request_wraps_url_error_as_opencode_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every client call turns a connection failure into OpenCodeError (F1)."""
+
+    def refuse(request: urllib.request.Request, timeout: float | None = None) -> object:
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    client = OpenCodeClient(BASE)
+
+    with pytest.raises(OpenCodeError, match="connection refused"):
+        client.create_session()
 
 
 # -- server: subprocess lifecycle ---------------------------------------------
