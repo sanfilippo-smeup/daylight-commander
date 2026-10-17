@@ -301,3 +301,58 @@ authorization.
 - `textual-plotext`/`plotext`: real axes and line plots, but adds a dependency
   and does not natively cover calendar heatmaps or pie/donut shares; rejected to
   keep the project dependency-free.
+
+---
+
+## ADR-014 — AI dashboard builder: embedded opencode server + sandboxed script runner
+
+### Context
+The owner requested a POC "AI dashboard builder": the user describes a dashboard
+in natural language, the harness generates Python, runs it in a sandbox, and
+shows the result live, then saves it for reuse. The project rules are strict:
+filesystem/process access only through `managers/` (ADR-003), no new third-party
+dependency without authorization, and the app must keep working when the feature
+is unavailable.
+
+### Decision
+- **Embed opencode as a managed subprocess.** The builder starts
+  `opencode serve` on a loopback port, discovers the port from the server's
+  startup line, and drives it over its HTTP API using only the Python standard
+  library (`urllib.request`, `json`, `threading`). No new Python dependency.
+- **Session protocol.** Create a session (`POST /session`), send the user's
+  request asynchronously (`POST /session/{id}/prompt_async`), and consume the
+  server-sent event stream (`GET /event`) to stream assistant text parts. Pending
+  clarifying questions (`GET /question`) are answered with
+  `POST /question/{id}/reply`; permission requests (`GET /permission`) are
+  answered with `POST /permission/{id}/reply`.
+- **Generated-script contract.** The agent is instructed to return a single
+  self-contained Python script (standard library only, plus the already-present
+  `rich`) that reads data from its working directory and prints a text/ANSI
+  dashboard to stdout. The harness extracts the fenced code block.
+- **Sandbox.** The script runs via `subprocess` with `python -I`, a temporary
+  working directory, a wall-clock timeout, and POSIX `resource` limits (CPU,
+  address space, file size, no core dumps). stdout is streamed line-by-line to
+  the UI. This is a best-effort POC boundary, not OS-level isolation.
+- **Persistence.** Saved dashboards (name, prompt, script, timestamps) are stored
+  as JSON under the per-user data directory and can be reloaded and re-run.
+- **Graceful degradation.** If the `opencode` binary is missing or the server
+  fails to start, the builder reports an actionable message and the rest of the
+  app is unaffected.
+
+### Consequences
+- No new runtime dependency; packaging is unchanged.
+- The feature requires the `opencode` binary at runtime and is therefore
+  optional and POC-scoped.
+- The sandbox limits blast radius (time, memory, file size, no shell) but does
+  not isolate the network or the filesystem beyond a temporary working directory.
+- All process/HTTP/filesystem logic stays in `managers/`, so it is unit-testable
+  with fakes and never blocks the UI thread.
+
+### Alternatives considered
+- **`opencode run --format json` one-shot per turn**: simpler, but it cannot
+  carry a multi-turn clarifying-question conversation or stream partial output;
+  rejected.
+- **A third-party HTTP client (`httpx`/`requests`)**: ergonomic, but adds a
+  dependency; the standard library is sufficient for a loopback JSON API.
+- **A real container sandbox (Docker/`bubblewrap`)**: stronger isolation, but
+  adds an external runtime dependency and is out of scope for a POC.

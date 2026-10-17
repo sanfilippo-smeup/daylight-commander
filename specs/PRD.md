@@ -5,7 +5,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft — Revision 4 |
+| Status | Draft — Revision 5 |
 | Product | Terminal file manager (TUI) |
 | Target users | Developers / technical users |
 | Platform | Python >= 3.13, terminal (256-color / truecolor) |
@@ -180,6 +180,40 @@ and servers.
   directory changes, and via an explicit refresh action; results are cached per
   directory.
 
+### 5.8 AI dashboard builder (FR-800)
+
+> **POC scope.** This section describes an experimental, owner-requested feature
+> delivered on an isolated feature branch. It is additive: when its runtime
+> dependency (the `opencode` binary) is absent, the rest of the app behaves
+> exactly as before.
+
+- **FR-801** — A **Builder** tab (reachable from the tab strip, the command
+  palette, and `Ctrl+6`) lets the user describe, in natural language, a dashboard
+  they want for the directory they are browsing.
+- **FR-802** — The request is fulfilled by an **embedded opencode server**: the
+  app starts a local `opencode serve` process and drives it over its HTTP API.
+  The agent turns the request into a self-contained Python script. When opencode
+  is not installed or cannot start, the tab shows a clear, actionable message and
+  the rest of the app is unaffected.
+- **FR-803** — The agent may ask **clarifying questions** before generating the
+  script. The tab presents each question with its options (and free-text entry
+  where allowed) and returns the user's answers to the same agent session.
+- **FR-804** — The generated script is executed in a **sandbox**: an isolated
+  subprocess with a temporary working directory, a wall-clock timeout, POSIX
+  resource limits, and no shell. The sandbox is best-effort for this POC (it does
+  not provide OS-level network or filesystem isolation).
+- **FR-805** — The dashboard is shown **live**: the script's standard output is
+  streamed into the tab as it is produced; standard error and a non-zero exit
+  status are surfaced alongside it.
+- **FR-806** — A generated dashboard can be **saved** (name, originating prompt,
+  script, timestamps) and **reloaded and re-run** later; saved dashboards persist
+  per user.
+- **FR-807** — Generated-script contract: self-contained Python, standard library
+  only (plus the already-present `rich`), reads its data from the sandbox working
+  directory, prints a text/ANSI dashboard to standard output, and exits 0.
+- **FR-808** — All process, HTTP, and filesystem access for the builder lives in
+  `managers/`; the UI never spawns processes or opens sockets directly.
+
 ## 6. Screens / views
 
 | # | Screen | Purpose |
@@ -192,6 +226,7 @@ and servers.
 | 6 | **External link launcher** | Hand off a URL to the default browser |
 | 7 | **Settings** | Theme, keybindings, defaults |
 | 8 | **Stats** | Directory statistics dashboard |
+| 9 | **Builder** | AI dashboard builder (POC): describe a dashboard, answer questions, preview it live, save it |
 
 ## 7. Proposed default keybindings
 
@@ -222,6 +257,7 @@ and servers.
 | `Ctrl+P` | Command palette |
 | `Ctrl+T` | Switch pane |
 | `Ctrl+5` | Stats |
+| `Ctrl+6` | Builder (AI dashboard builder, POC) |
 | `Ctrl+Q` | Quit |
 
 > All bindings are configurable via `config`. The footer shows the
@@ -248,6 +284,15 @@ and servers.
 - Hex/binary editor.
 - Built-in archive browsing (may open externally).
 - Plugin system.
+
+### 9.1 Out of scope for the AI dashboard builder POC (FR-800)
+
+- OS-level sandbox isolation (containers, namespaces, seccomp) and network
+  egress control — the sandbox is a best-effort subprocess boundary.
+- Installing arbitrary third-party packages for generated dashboards.
+- Multi-user, remote, or shared dashboard execution.
+- Guaranteeing the quality or correctness of agent-generated code; the user
+  reviews the generated script and its output.
 
 ## 10. Success metrics
 
