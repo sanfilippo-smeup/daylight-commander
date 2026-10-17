@@ -9,11 +9,16 @@ from typing import Mapping
 
 __all__ = [
     "AppConfig",
+    "BuilderEvent",
+    "BuilderOption",
+    "BuilderQuestion",
+    "DashboardArtifact",
     "DirEntry",
     "DirectoryStats",
     "FileEntry",
     "FileProperties",
     "FileStat",
+    "SandboxResult",
     "Theme",
     "ViewDocument",
     "VIEW_KINDS",
@@ -93,14 +98,14 @@ class DirEntry:
 class ViewDocument:
     """What the internal viewer should draw for one file (DC-004).
 
-    Produced only by :mod:`daylight.managers.content`, so the viewer widget never
-    decides *how* a format is read: it only renders :attr:`kind` and shows
-    :attr:`notice` when the content had to be degraded.
+        Produced only by :mod:`daylight.managers.content`, so the viewer widget never
+        decides *how* a format is read: it only renders :attr:`kind` and shows
+        :attr:`notice` when the content had to be degraded.
 
-For ``markdown``/``json`` :attr:`text` is the formatted document and
-    is bounded by ``PRETTY_LIMIT``; :attr:`truncated` then says so. For ``text``
-    (YAML included) the widget asks the manager for a window of lines instead,
-    because a source file must never be materialised whole.
+    For ``markdown``/``json`` :attr:`text` is the formatted document and
+        is bounded by ``PRETTY_LIMIT``; :attr:`truncated` then says so. For ``text``
+        (YAML included) the widget asks the manager for a window of lines instead,
+        because a source file must never be materialised whole.
     """
 
     kind: str
@@ -231,3 +236,76 @@ class DirectoryStats:
     def dirs_files_ratio(self) -> str:
         """The ``dirs:files`` ratio the summary card shows, e.g. ``2:5``."""
         return f"{self.directory_count}:{self.file_count}"
+
+
+@dataclass(frozen=True)
+class BuilderOption:
+    """One selectable choice of an AI builder clarifying question (DC-024).
+
+    Mirrors the opencode ``QuestionOption`` shape: what the user sees
+    (:attr:`label`) and, optionally, why they would pick it
+    (:attr:`description`).
+    """
+
+    label: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class BuilderQuestion:
+    """One pending clarifying question asked by the AI builder (DC-024).
+
+    Normalized from an opencode question request (which may bundle several
+    questions): :attr:`id` is the request id used to reply, the remaining
+    fields describe its first question. ``multiple`` allows several options to
+    be selected, ``custom`` allows a free-text answer.
+    """
+
+    id: str
+    header: str
+    question: str
+    options: tuple[BuilderOption, ...] = ()
+    multiple: bool = False
+    custom: bool = False
+
+
+@dataclass(frozen=True)
+class BuilderEvent:
+    """One parsed event of an AI builder turn (DC-024).
+
+    :attr:`kind` is ``"text"`` for streamed assistant text (in :attr:`text`),
+    ``"question"`` for a pending clarifying question (in :attr:`question`) and
+    ``"idle"`` when the session went idle, i.e. the turn is over.
+    """
+
+    kind: str
+    text: str = ""
+    question: BuilderQuestion | None = None
+
+
+@dataclass(frozen=True)
+class SandboxResult:
+    """Outcome of one sandboxed script run (DC-024).
+
+    ``exit_code`` is the script's exit status (negative when a signal killed
+    it), ``timed_out`` is True when the wall-clock timeout had to kill it, and
+    ``duration_seconds`` is the observed wall-clock time.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class DashboardArtifact:
+    """One saved AI dashboard: name, prompt, script and timestamps (FR-806)."""
+
+    id: str
+    name: str
+    prompt: str
+    script: str
+    created: float
+    modified: float
