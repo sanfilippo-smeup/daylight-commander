@@ -75,9 +75,20 @@ def run_async(fn: F) -> F:
 class FakeServer:
     """An embedded server that is instantly 'running' at a fake URL."""
 
-    def __init__(self, error: OpenCodeError | None = None) -> None:
+    def __init__(
+        self,
+        error: OpenCodeError | None = None,
+        *,
+        api_version: str = "v1",
+        password: str | None = None,
+    ) -> None:
         self.error = error
         self.starts = 0
+        self.api_version = api_version
+        self.password = password
+        #: The ``(base_url, api_version, password)`` tuples the page handed to
+        #: its client factory, recorded to prove the wiring (DC-028).
+        self.factory_args: list[tuple[str, str, str | None]] = []
 
     def start(self) -> str:
         if self.error is not None:
@@ -180,11 +191,15 @@ def install_fakes(
     """
     store = DashboardStore(root=tmp_path / "dashboards")
 
+    def client_factory(base_url: str, api_version: str, password: str | None) -> FakeClient:
+        server.factory_args.append((base_url, api_version, password))
+        return client
+
     class InjectedBuilderPage(BuilderPage):
         def __init__(self) -> None:
             super().__init__(
                 server_factory=lambda: server,
-                client_factory=lambda base_url: client,
+                client_factory=client_factory,
                 runner=runner,
                 store=store,
             )
@@ -553,9 +568,26 @@ async def test_a_client_error_is_surfaced_without_crashing(
 def test_the_default_page_uses_the_dc024_managers() -> None:
     page = BuilderPage()
     assert page._server_factory is OpenCodeServer
-    assert isinstance(page._client_factory("http://x"), OpenCodeClient)
+    client = page._client_factory("http://x", "v2", "s3cret")
+    assert isinstance(client, OpenCodeClient)
+    assert client.api_version == "v2"  # the default factory passes the version through
     assert page._runner is run_script
     assert page._store.root == DashboardStore().root
+
+
+@run_async
+async def test_the_client_factory_receives_the_server_api_version_and_password(
+    tmp_path: Path, tree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page hands the server's version and password to the factory (DC-028)."""
+    server = FakeServer(api_version="v2", password="s3cret")
+    install_fakes(monkeypatch, tmp_path, server, FakeClient([]), FakeRunner(_ok()))
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        page = await open_builder(pilot)
+        await submit_prompt(pilot, page, "build it")
+        await wait_for(pilot, lambda: not page._busy)
+        assert server.factory_args == [("http://builder-fake:4096", "v2", "s3cret")]
 
 
 # -- unit: script extraction and naming --------------------------------------------

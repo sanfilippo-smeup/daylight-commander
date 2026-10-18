@@ -39,8 +39,8 @@ application.
   Python (asking clarifying questions when it needs to), and the generated
   script runs in a sandbox with its output streamed live into a preview pane.
   Dashboards are saved and re-run with `Ctrl+S` / `Ctrl+L` / `Ctrl+R`.
-  Requires the `opencode` CLI; without it the tab shows a hint and the rest
-  of the app is unaffected.
+  Requires the `opencode` CLI (v2, with v1 as a fallback); without it the tab
+  shows a hint and the rest of the app is unaffected.
 - **External launches** — open files with the system handler, edit in
   `$EDITOR`, and open URLs found in files with the default browser.
 
@@ -155,6 +155,16 @@ proof-of-concept (PRD §5.8, ADR-014).
 **Prerequisite.** The `opencode` CLI must be installed and on your `PATH` —
 the app starts `opencode serve` on loopback automatically when you build.
 Without it the Builder tab shows a hint and the rest of the app is unaffected.
+
+**opencode versions.** The Builder supports opencode **v2**: it authenticates
+with HTTP Basic auth using the per-process password the server prints at
+startup, calls the JSON API under `/api`, streams the incremental
+`session.text.delta` / `session.text.ended` events, and answers clarifying
+questions delivered as forms (`form.created` → form reply). Older installs
+that only speak the **v1** API are supported as a fallback: the version is
+detected from the server's startup output, and the client switches protocol
+automatically. The v2 API is experimental upstream and may drift; when it
+does, the Builder degrades gracefully instead of crashing.
 
 **Flow.**
 

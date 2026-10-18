@@ -10,7 +10,8 @@ HTTP, sandbox run, store I/O) runs on a Textual worker thread; results come
 back to the UI through ``app.call_from_thread``.
 
 One build is one worker (AC3): it starts or reuses the embedded opencode
-server, creates a session, sends the prompt and consumes the manager-level
+server (v1 or v2, detected from its startup output -- ADR-015), creates a
+session, sends the prompt and consumes the manager-level
 ``GET /event`` SSE stream. Assistant text arrives cumulative (DC-024 review
 F10), so each text event *replaces* the current transcript block instead of
 appending; a question blocks the worker until the user answers, and the reply
@@ -59,8 +60,8 @@ __all__ = [
 #: Starts (or reuses) the embedded opencode server and hands out its base URL.
 ServerFactory = Callable[[], OpenCodeServer]
 
-#: Builds one client for a server's base URL.
-ClientFactory = Callable[[str], OpenCodeClient]
+#: Builds one client for a server's base URL, API version and password (ADR-015).
+ClientFactory = Callable[[str, str, str | None], OpenCodeClient]
 
 #: Runs one script in the sandbox: the DC-024 ``run_script`` signature.
 ScriptRunner = Callable[..., SandboxResult]
@@ -151,7 +152,9 @@ class BuilderPage(Static):
         # every one of them so the flow runs without a network or a binary.
         self._server_factory: ServerFactory = server_factory or OpenCodeServer
         self._client_factory: ClientFactory = client_factory or (
-            lambda base_url: OpenCodeClient(base_url)
+            lambda base_url, api_version, password: OpenCodeClient(
+                base_url, api_version=api_version, password=password
+            )
         )
         self._runner: ScriptRunner = runner or run_script
         self._store: DashboardStore = store or DashboardStore()
@@ -295,11 +298,11 @@ class BuilderPage(Static):
         """The blocking part of one build: server, session, turn, sandbox."""
         post = self.app.call_from_thread
         try:
-            base_url = self._ensure_server()
+            base_url, api_version, password = self._ensure_server()
         except OpenCodeError as error:
             post(self._transcript_system, f"opencode is not available: {error}\n{OPENCODE_HINT}")
             return
-        client = self._client_factory(base_url)
+        client = self._client_factory(base_url, api_version, password)
         session_id = client.create_session(
             directory=str(directory), title=_dashboard_name(prompt_text)
         )
@@ -332,11 +335,17 @@ class BuilderPage(Static):
         post(self._transcript_system, "Running the generated script in the sandbox\u2026")
         self._run_script_blocking(script, directory)
 
-    def _ensure_server(self) -> str:
-        """Start or reuse the embedded opencode server (AC3, FR-802)."""
+    def _ensure_server(self) -> tuple[str, str, str | None]:
+        """Start or reuse the embedded opencode server (AC3, FR-802).
+
+        Returns ``(base_url, api_version, password)`` so the client factory can
+        build a version-aware client (ADR-015): a v2 server is driven with
+        Basic auth and ``/api`` paths, a v1 server keeps the original protocol.
+        """
         if self._server is None:
             self._server = self._server_factory()
-        return self._server.start()
+        base_url = self._server.start()
+        return base_url, self._server.api_version, self._server.password
 
     def _ask_and_wait(self, question: BuilderQuestion) -> list[list[str]] | None:
         """Show ``question`` and block this worker until the user answers (AC4).

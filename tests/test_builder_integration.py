@@ -11,12 +11,19 @@ drift). The generated script is extracted with the page's own
 :func:`extract_script`, run through the real sandbox against ``tmp_path``, and
 persisted and reloaded with :class:`DashboardStore`.
 
+A second stub mimics the opencode **v2** API (DC-028, ADR-015) -- HTTP Basic
+auth, the ``/api`` prefix, ``session.text.delta``/``session.text.ended`` and
+``form.created`` events, and the form reply endpoint -- and drives the real
+version-aware client through a full turn against it, then runs and persists the
+extracted script the same way.
+
 Hermetic by construction: loopback only, no ``opencode`` binary, no external
 network, no writes outside ``tmp_path``.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -24,7 +31,9 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -98,6 +107,27 @@ ASSISTANT_REPLY = (
 #: The data file the test drops into ``tmp_path`` for the script to summarize.
 SALES_CSV = "region,amount\nnorth,12.5\nsouth,17.5\n"
 
+# -- opencode v2 (DC-028, ADR-015) -----------------------------------------------
+
+#: The password the v2 stub requires as HTTP Basic auth (``opencode:<password>``).
+STUB_PASSWORD = "stub-password"
+
+#: The fixed v2 ids the stub answers with (the client echoes them back).
+FORM_ID = "frm_stub_1"
+FORM_FIELD_KEY = "q0"
+
+#: The two assistant message ids the stub streams (one per message, like v2).
+PRE_QUESTION_MESSAGE_ID = "msg_stub_pre"
+REPLY_MESSAGE_ID = "msg_stub_reply"
+
+#: The pre-question text, streamed as two ``session.text.delta`` chunks.
+PRE_QUESTION_DELTAS = ("Reading ", "the data directory…")
+#: The full pre-question text the ``session.text.ended`` event carries.
+PRE_QUESTION_TEXT = "".join(PRE_QUESTION_DELTAS)
+
+#: The reply text, streamed as two deltas before its ``session.text.ended``.
+REPLY_DELTAS = (ASSISTANT_REPLY[:24], ASSISTANT_REPLY[24:])
+
 
 def _text_event(text: str) -> dict[str, Any]:
     """A ``message.part.updated`` payload carrying an assistant text part."""
@@ -112,6 +142,62 @@ def _question_event() -> dict[str, Any]:
 def _idle_event() -> dict[str, Any]:
     """A ``session.idle`` payload: the turn is over."""
     return {"type": "session.idle", "properties": {"sessionID": SESSION_ID}}
+
+
+def _v2_delta_event(message_id: str, delta: str) -> dict[str, Any]:
+    """A ``session.text.delta`` payload: one incremental chunk of a message."""
+    return {
+        "type": "session.text.delta",
+        "data": {"assistantMessageID": message_id, "ordinal": 0, "delta": delta},
+    }
+
+
+def _v2_text_ended_event(message_id: str, text: str) -> dict[str, Any]:
+    """A ``session.text.ended`` payload carrying the full message text."""
+    return {
+        "type": "session.text.ended",
+        "data": {"assistantMessageID": message_id, "ordinal": 0, "text": text},
+    }
+
+
+def _v2_form_event() -> dict[str, Any]:
+    """A ``form.created`` payload with one string field (opencode v2.0.32)."""
+    return {
+        "type": "form.created",
+        "data": {
+            "form": {
+                "id": FORM_ID,
+                "sessionID": SESSION_ID,
+                "title": "Questions",
+                "fields": [
+                    {
+                        "key": FORM_FIELD_KEY,
+                        "title": "Data source",
+                        "description": "Which file should the dashboard summarize?",
+                        "type": "string",
+                        "options": [
+                            {
+                                "value": "sales.csv",
+                                "label": "sales.csv",
+                                "description": "The sales data",
+                            },
+                            {
+                                "value": "inventory.csv",
+                                "label": "inventory.csv",
+                                "description": "The stock data",
+                            },
+                        ],
+                        "custom": True,
+                    }
+                ],
+            }
+        },
+    }
+
+
+def _v2_execution_succeeded_event() -> dict[str, Any]:
+    """A ``session.execution.succeeded`` payload: the turn is over."""
+    return {"type": "session.execution.succeeded", "data": {"sessionID": SESSION_ID}}
 
 
 class _StubOpenCode:
@@ -237,6 +323,81 @@ class _StubServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+class _StubV2OpenCode:
+    """State shared by the v2 stub handlers: recorded requests and scripted SSE.
+
+    ``events`` is the queue the ``GET /api/event`` handler drains; ``None`` is
+    the sentinel that ends the stream.
+    """
+
+    def __init__(self) -> None:
+        self.base_url = ""
+        self.requests: list[tuple[str, str, dict[str, str], Any]] = []
+        self.events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self.replies: list[tuple[str, Any]] = []
+
+
+class _StubV2Handler(_StubHandler):
+    """Routes the opencode v2 API endpoints the builder uses (v2.0.32, ADR-015).
+
+    Every request must carry HTTP Basic auth (``opencode:<password>``) and the
+    JSON API lives under ``/api``. The SSE framing, request recording and JSON
+    helpers are inherited from the v1 handler.
+    """
+
+    def _authorized(self) -> bool:
+        """True when the request carries the stub's Basic auth credentials."""
+        token = base64.b64encode(f"opencode:{STUB_PASSWORD}".encode("utf-8")).decode("ascii")
+        return self.headers.get("Authorization") == f"Basic {token}"
+
+    def _send_empty(self, status: int) -> None:
+        """A bodyless response (the real v2 form reply answers 204)."""
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        body = self._read_json()
+        if not self._authorized():
+            self._send_json({"error": "unauthorized"}, status=401)
+            return
+        self._record(body)
+        path = self.path.partition("?")[0]
+        if path == "/api/session":
+            self._send_json({"data": {"id": SESSION_ID}})
+        elif path == f"/api/session/{SESSION_ID}/prompt":
+            # The agent starts working: incremental text deltas, the ended
+            # event, then a clarifying form -- all on the SSE stream.
+            for delta in PRE_QUESTION_DELTAS:
+                self.stub.events.put(_v2_delta_event(PRE_QUESTION_MESSAGE_ID, delta))
+            self.stub.events.put(_v2_text_ended_event(PRE_QUESTION_MESSAGE_ID, PRE_QUESTION_TEXT))
+            self.stub.events.put(_v2_form_event())
+            self._send_json({})
+        elif path == f"/api/session/{SESSION_ID}/form/{FORM_ID}/reply":
+            self.stub.replies.append((path, body))
+            # The agent continues: the reply text with the fenced script, then
+            # the turn ends and the stream is closed via the sentinel.
+            for delta in REPLY_DELTAS:
+                self.stub.events.put(_v2_delta_event(REPLY_MESSAGE_ID, delta))
+            self.stub.events.put(_v2_text_ended_event(REPLY_MESSAGE_ID, ASSISTANT_REPLY))
+            self.stub.events.put(_v2_execution_succeeded_event())
+            self.stub.events.put(None)
+            self._send_empty(204)
+        else:
+            self._send_json({"error": "not found"}, status=404)
+
+    def do_GET(self) -> None:
+        if not self._authorized():
+            self._send_json({"error": "unauthorized"}, status=401)
+            return
+        self._record(None)
+        path = self.path.partition("?")[0]
+        if path == "/api/event":
+            self._event_stream()
+        else:
+            self._send_json({"error": "not found"}, status=404)
+
+
 @pytest.fixture()
 def stub_opencode() -> Iterator[_StubOpenCode]:
     """A stub opencode server on an ephemeral loopback port (AC4).
@@ -260,6 +421,32 @@ def stub_opencode() -> Iterator[_StubOpenCode]:
         server.server_close()
         thread.join(timeout=5.0)
         assert not thread.is_alive(), "stub opencode server thread did not stop"
+
+
+@pytest.fixture()
+def stub_opencode_v2() -> Iterator[_StubV2OpenCode]:
+    """A stub opencode v2 server on an ephemeral loopback port (DC-028 AC3).
+
+    Requires HTTP Basic auth on every request, serves the JSON API under
+    ``/api``, and streams the v2 event shapes. Bound to ``127.0.0.1:0``, served
+    from a daemon thread, and torn down deterministically in ``finally``: the
+    serve loop is stopped, the listening socket is closed, and the thread is
+    joined -- asserted, so nothing leaks between tests.
+    """
+    stub = _StubV2OpenCode()
+    server = _StubServer(("127.0.0.1", 0), _StubV2Handler)
+    server.stub = stub  # attached before any request can arrive
+    thread = threading.Thread(target=server.serve_forever, daemon=True, name="stub-opencode-v2")
+    thread.start()
+    stub.base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        yield stub
+    finally:
+        stub.events.put(None)  # release a handler blocked on the queue, if any
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive(), "stub opencode v2 server thread did not stop"
 
 
 def test_full_turn_from_prompt_to_saved_dashboard(
@@ -329,6 +516,96 @@ def test_full_turn_from_prompt_to_saved_dashboard(
     # Save and reload: the round-trip is identical (AC3).
     store = DashboardStore(root=tmp_path / "dashboards")
     saved = store.save(name="Sales dashboard", prompt=PROMPT, script=script)
+    assert [artifact.id for artifact in store.list()] == [saved.id]
+    loaded = store.load(saved.id)
+    assert loaded == saved
+    assert loaded.script == script
+    assert loaded.prompt == PROMPT
+    assert time.monotonic() - started < 60.0  # a full turn is fast; it never hangs
+
+
+def test_full_turn_from_prompt_to_saved_dashboard_v2(
+    tmp_path: Path, stub_opencode_v2: _StubV2OpenCode
+) -> None:
+    """The real v2 client drives prompt → form → reply → script → store (AC3-4)."""
+    started = time.monotonic()
+    client = OpenCodeClient(
+        stub_opencode_v2.base_url, password=STUB_PASSWORD, api_version="v2"
+    )  # default urllib transport: a real socket
+
+    # The stub rejects requests without Basic auth (AC3).
+    anonymous = urllib.request.Request(
+        f"{stub_opencode_v2.base_url}/api/session", data=b"{}", method="POST"
+    )
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        urllib.request.urlopen(anonymous)
+    assert raised.value.code == 401
+
+    session_id = client.create_session(directory=str(tmp_path), title=PROMPT)
+    assert session_id == SESSION_ID
+
+    # The stream is opened before the prompt is sent, exactly like the page
+    # does, so no early event can be missed.
+    lines = client.open_event_stream()
+    client.prompt_async(session_id, PROMPT)
+
+    texts: list[str] = []
+    for event in client.stream_events(lines):
+        if event.kind == "text":
+            texts.append(event.text)
+        elif event.kind == "question" and event.question is not None:
+            # The v2 form arrived normalized into the BuilderQuestion model.
+            question = event.question
+            assert question.id == FORM_ID
+            assert question.session_id == SESSION_ID
+            assert question.field_key == FORM_FIELD_KEY
+            assert question.header == "Data source"
+            assert question.question == "Which file should the dashboard summarize?"
+            client.reply_question(question.id, [[ANSWER]])
+        elif event.kind == "idle":
+            break
+
+    # The deltas streamed incrementally; each ended event carried the full text.
+    assert texts[0] == PRE_QUESTION_DELTAS[0]
+    assert texts[2] == PRE_QUESTION_TEXT
+    assert texts[-1] == ASSISTANT_REPLY
+
+    # The stub saw exactly the v2 requests the API contract implies, in order.
+    methods_paths = [(method, path) for method, path, _query, _body in stub_opencode_v2.requests]
+    assert methods_paths == [
+        ("POST", "/api/session"),
+        ("GET", "/api/event"),
+        ("POST", f"/api/session/{SESSION_ID}/prompt"),
+        ("POST", f"/api/session/{SESSION_ID}/form/{FORM_ID}/reply"),
+    ]
+    assert stub_opencode_v2.requests[0][3] == {
+        "title": PROMPT,
+        "location": {"directory": str(tmp_path)},
+    }
+    assert stub_opencode_v2.requests[2][3] == {"text": PROMPT}
+    assert stub_opencode_v2.requests[3][3] == {"answer": {FORM_FIELD_KEY: ANSWER}}
+    assert stub_opencode_v2.replies == [
+        (f"/api/session/{SESSION_ID}/form/{FORM_ID}/reply", {"answer": {FORM_FIELD_KEY: ANSWER}})
+    ]
+
+    # The extracted script runs in the sandbox against tmp_path (AC4).
+    script = extract_script(texts[-1])
+    assert script is not None
+    assert "Path.cwd().glob" in script  # the code block, not the prose
+    (tmp_path / "sales.csv").write_text(SALES_CSV, encoding="utf-8")
+    streamed: list[str] = []
+    result = run_script(script, cwd=tmp_path, timeout=30.0, on_output=streamed.append)
+    assert result.exit_code == 0
+    assert not result.timed_out
+    assert result.stderr == ""
+    assert "DAYLIGHT DASHBOARD: sales summary" in result.stdout
+    assert "rows: 2" in result.stdout
+    assert "total: 30.00" in result.stdout
+    assert streamed == result.stdout.splitlines()  # stdout arrived live, line by line
+
+    # Save and reload: the round-trip is identical (AC4).
+    store = DashboardStore(root=tmp_path / "dashboards")
+    saved = store.save(name="Sales dashboard v2", prompt=PROMPT, script=script)
     assert [artifact.id for artifact in store.list()] == [saved.id]
     loaded = store.load(saved.id)
     assert loaded == saved
