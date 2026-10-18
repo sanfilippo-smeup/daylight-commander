@@ -144,6 +144,41 @@ page (`Ctrl+4`) and persisted per user to `$XDG_CONFIG_HOME/daylight/config.json
 defaults shown above; the footer and command palette always reflect the active
 bindings.
 
+## AI dashboard builder (POC)
+
+The Builder tab (`Ctrl+6`) generates a dashboard from a plain-language
+description: you describe what you want to see, an embedded
+[`opencode`](https://opencode.ai) agent writes a self-contained Python script
+for it, and the script's output streams live into a preview pane. It is a
+proof-of-concept (PRD §5.8, ADR-014).
+
+**Prerequisite.** The `opencode` CLI must be installed and on your `PATH` —
+the app starts `opencode serve` on loopback automatically when you build.
+Without it the Builder tab shows a hint and the rest of the app is unaffected.
+
+**Flow.**
+
+1. Press `Ctrl+6`, type a prompt into the input (for example *"Summarize the
+   CSV files in this directory as a dashboard"*), and press `Enter`.
+2. The agent may ask a clarifying question; pick one of the offered options or
+   type a free-text answer, and the build continues.
+3. The agent replies with a Python script. It runs in a sandbox with the
+   active pane's directory as its working directory, and its stdout streams
+   into the preview as it is produced.
+4. `Ctrl+S` saves the dashboard, `Ctrl+L` loads a saved one, and `Ctrl+R`
+   re-runs the current script.
+
+**Storage.** Saved dashboards are JSON files (name, prompt, script,
+timestamps) under `$XDG_DATA_HOME/daylight/dashboards`, falling back to
+`~/.local/share/daylight/dashboards`.
+
+**POC limitations.** The sandbox is best-effort: a generated script runs as a
+local subprocess with a wall-clock timeout and POSIX resource limits where
+available, but with the permissions of your user — there is no OS-level
+isolation. Generated scripts are limited to the Python standard library (no
+arbitrary package installation), and the feature is single-user and local —
+no remote or multi-user use.
+
 ## How this project was made
 
 Daylight Commander was built end-to-end by a human owner working with a
