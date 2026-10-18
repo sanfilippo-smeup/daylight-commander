@@ -208,13 +208,20 @@ def test_a_page_binding_and_an_app_binding_on_the_same_key_keep_one_hint() -> No
 
 
 def test_the_palette_offers_every_page_action() -> None:
-    """Every action a page can run is reachable from the palette, hidden ones too."""
+    """Every action a page can run is reachable from the palette, hidden ones too.
+
+    Pages without a tab label (DC-030's dynamic Dashboard) are covered where
+    they are opened: their palette entries exist only while the page exists.
+    """
     app = make_app()
     names = {command.name for command in app.palette_commands()}
     for page_name, page_class in DaylightApp.PAGES.items():
+        label = PAGE_LABELS.get(page_name)
+        if label is None:
+            continue
         for binding in Binding.make_bindings(list(page_class.BINDINGS)):
             title = binding.action.replace("_", " ").capitalize()
-            assert f"{PAGE_LABELS[page_name]}: {title}" in names, binding.action
+            assert f"{label}: {title}" in names, binding.action
 
 
 def test_the_palette_offers_every_app_binding() -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from textual.app import ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.containers import Horizontal, Vertical
 from textual.keys import format_key as format_key_character
 from textual.widgets import Static, Tab, Tabs
@@ -87,6 +88,15 @@ class ShellHeader(Vertical):
     def path_text(self) -> str:
         """The header path as plain text, without the padding spaces."""
         return str(self._path.content).strip()
+
+    def add_page_tab(self, name: str, label: str) -> AwaitComplete:
+        """Add one dynamic page tab and return the tab strip's AwaitComplete (DC-030).
+
+        ``Tabs.add_tab`` is not a plain sync mutation: the tab exists in the
+        strip only once the returned awaitable completes, and the caller
+        activates it afterwards. A dynamic tab is added once and reused.
+        """
+        return self.tabs.add_tab(Tab(label, id=name))
 
 
 class NoticeLine(Static):
