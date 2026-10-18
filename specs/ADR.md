@@ -407,3 +407,70 @@ Make the embedded client **version-aware**:
   rejected.
 - **Use the v2 web app / SDK**: the v2 SDK is JavaScript; embedding it would add
   a Node dependency and a second runtime; rejected for a Python POC.
+
+---
+
+## ADR-016 — Declarative dashboard specifications rendered natively in the TUI
+
+### Context
+Revision 5 implemented the AI dashboard builder as a **generated Python
+script**: the agent returned a fenced Python program, the harness ran it in a
+best-effort sandbox, and its stdout was streamed into a text Preview pane
+(ADR-014, FR-804/805/807). A live owner run exposed two problems. First, the
+agent ignored the script contract and produced an HTML/JS dashboard; the
+harness then extracted a line of prose as "Python" and executed it, yielding a
+`SyntaxError`. Second, even a functioning script would only paint ANSI text
+inside a pane: it would not use Daylight's pages, widgets, theme tokens, or
+`.tcss` styles, so it could never look or behave like the rest of the TUI.
+
+The owner changed the product intent: dashboards must be created **inside the
+Daylight TUI using the TUI standards and structure**. The owner selected a
+declarative specification rendered natively (1A), a dedicated Dashboard tab
+(2C), and replacement of the script/HTML path (3A).
+
+### Decision
+- **The agent returns a dashboard specification, not code.** The Builder
+  prompt requires a single JSON object with `schema_version: 1`, a title, and
+  an ordered list of blocks. The specification has no executable content.
+- **A strict allowlist validator is the boundary.** `managers/` parses and
+  validates the JSON: known top-level keys only, block `kind` from
+  `summary_cards` / `bar_chart` / `share_bar` / `histogram` / `heatmap` /
+  `table`, `source` from the FR-807 allowlist, `top_n` in 1–50, and a known
+  theme token. Any unknown key, kind, source, or out-of-range value is rejected
+  with a precise message; nothing is executed.
+- **Native rendering in a dedicated Dashboard tab.** A `DashboardPage` module
+  renders the blocks with the existing `SummaryCard`, `BarChart`, `ShareBar`,
+  `Histogram`, and `CalendarHeatmap` widgets and a Rich table, styled by
+  `styles/dashboard.tcss` and theme variables. The app adds one dynamic
+  **Dashboard** tab, reused for each generated or loaded dashboard.
+- **Data is bound by source, at render time.** The page asks
+  `managers.stats.build_stats` for the dashboard's directory on a worker
+  thread; block sources map deterministically onto `DirectoryStats` fields.
+- **Persistence stores the specification.** A saved dashboard holds name,
+  prompt, specification, directory, and timestamps. Revision-5 artifacts that
+  contain a `script` are loaded as legacy entries and are neither executed nor
+  rendered.
+- **The script/sandbox path is removed** from the Builder flow. The sandbox
+  manager and its model/tests are deleted once no consumer remains.
+
+### Consequences
+- No agent-authored code runs in the app process; the sandbox attack surface
+  disappears.
+- Rendering is deterministic and unit-testable, and reuses the Stats widgets and
+  theme system, so dashboards look native by construction.
+- Expressiveness is intentionally limited to the allowlisted blocks and data
+  sources. New visuals require a new block kind or source, not agent code.
+- The agent contract is versioned (`schema_version: 1`) and must travel in the
+  Builder instruction; drift is caught by validation and by the stub-server
+  integration test.
+- Legacy saved scripts remain on disk but are visibly marked legacy.
+
+### Alternatives considered
+- **Generated Textual Python module**: maximum flexibility, but it executes
+  agent-authored code in-process (the sandbox no longer applies), requires a
+  stable plugin API, and makes every generated dashboard a security review;
+  rejected.
+- **Keep the script/stdout path and style the pane**: least work, but it does
+  not use Daylight's structure and cannot satisfy the owner's intent; rejected.
+- **HTML/SVG dashboard embedded or opened externally**: leaves the TUI and adds
+  a browser dependency; rejected.
