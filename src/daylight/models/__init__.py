@@ -13,6 +13,11 @@ __all__ = [
     "BuilderOption",
     "BuilderQuestion",
     "DashboardArtifact",
+    "DashboardBlock",
+    "DashboardBlockData",
+    "DashboardSpec",
+    "DashboardSummaryValue",
+    "DashboardTable",
     "DirEntry",
     "DirectoryStats",
     "FileEntry",
@@ -313,3 +318,68 @@ class DashboardArtifact:
     script: str
     created: float
     modified: float
+
+
+@dataclass(frozen=True)
+class DashboardBlock:
+    """One block of a parsed AI dashboard specification (DC-029, ADR-016).
+
+    Built only by :mod:`daylight.managers.dashboard_spec`, so ``kind`` and
+    ``source`` are always an allowlisted pair, ``top_n`` is a true integer
+    inside ``1..50`` and ``color_token`` a known theme token. ``title`` may be
+    empty: the Dashboard page then shows its own per-kind default.
+    """
+
+    kind: str
+    source: str
+    title: str = ""
+    top_n: int = 8
+    color_token: str = "accent"
+
+
+@dataclass(frozen=True)
+class DashboardSpec:
+    """A parsed AI dashboard specification (DC-029, ADR-016).
+
+    ``schema_version`` is explicit so the contract can evolve without silently
+    accepting documents written for another version. Built only by
+    :func:`daylight.managers.dashboard_spec.parse_spec`.
+    """
+
+    schema_version: int
+    title: str
+    blocks: tuple[DashboardBlock, ...]
+
+
+@dataclass(frozen=True)
+class DashboardSummaryValue:
+    """Render data of one summary card: label, displayed value, optional detail."""
+
+    label: str
+    value: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class DashboardTable:
+    """Render data of a table block: a header row and string cell rows."""
+
+    headers: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class DashboardBlockData:
+    """One bound block: what the Dashboard page renders for it (DC-029).
+
+    The binder fills exactly the member matching the block's source --
+    :attr:`summary` for ``summary``, :attr:`rows` for the ranked series sources
+    and ``size_buckets``, :attr:`days` for ``daily_counts`` and :attr:`table`
+    for the table sources -- and leaves the others empty.
+    """
+
+    block: DashboardBlock
+    summary: tuple[DashboardSummaryValue, ...] = ()
+    rows: tuple[tuple[str, int], ...] = ()
+    days: Mapping[date, int] | None = None
+    table: DashboardTable | None = None

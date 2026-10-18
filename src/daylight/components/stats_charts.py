@@ -22,6 +22,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from daylight import themes
+from daylight.managers.format import human_size
 from daylight.models import DirectoryStats, Theme
 
 __all__ = [
@@ -48,16 +49,6 @@ def active_theme(widget: Widget) -> Theme:
         return themes.get_theme(widget.app.app_config.theme)
     except NoActiveAppError:
         return themes.DEFAULT_THEME
-
-
-def human_size(size: int | float) -> str:
-    """``1536`` -> ``1.5 KiB``: a byte count as a person reads it."""
-    value = float(size)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
-        if value < 1024:
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} PiB"
 
 
 def _blend(first: str, second: str, factor: float) -> str:
