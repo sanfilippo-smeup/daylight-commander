@@ -267,6 +267,10 @@ class BuilderQuestion:
     options: tuple[BuilderOption, ...] = ()
     multiple: bool = False
     custom: bool = False
+    #: opencode v2 form routing (ADR-015): the session that owns the form and
+    #: the field key the answer must be keyed by. Empty for v1 questions.
+    session_id: str = ""
+    field_key: str = ""
 
 
 @dataclass(frozen=True)
