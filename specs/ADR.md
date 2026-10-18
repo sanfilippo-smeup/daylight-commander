@@ -356,3 +356,54 @@ is unavailable.
   dependency; the standard library is sufficient for a loopback JSON API.
 - **A real container sandbox (Docker/`bubblewrap`)**: stronger isolation, but
   adds an external runtime dependency and is out of scope for a POC.
+
+---
+
+## ADR-015 — Support opencode v2 (auth + `/api` + forms) with a v1 fallback
+
+### Context
+The AI dashboard builder (ADR-014) was implemented against the opencode v1 HTTP
+API (`POST /session`, `POST /session/{id}/prompt_async`, `GET /event`,
+`GET /question`, `POST /question/{id}/reply`). The owner's installed `opencode`
+is **v2.0.32**, whose server is materially different: it prints a per-process
+password, serves its JSON API under `/api` behind HTTP Basic auth, uses
+`POST /api/session/{id}/prompt` with a `{text}` body, streams
+`session.text.delta` / `session.text.ended` / `session.execution.*` events, and
+asks clarifying questions through **forms** (`form.created`,
+`POST /api/session/{id}/form/{formID}/reply` with `{"answer": {key: value}}`).
+Against v2 the v1 client gets HTTP 405 on `POST /session`.
+
+### Decision
+Make the embedded client **version-aware**:
+- `OpenCodeServer` detects the API version from the startup output: v2 prints
+  `server listening on http://…` plus `server password …`; v1 prints
+  `opencode server listening on http://…` with no password. It exposes
+  `api_version` (`"v1"`/`"v2"`) and `password` (v2 only).
+- `OpenCodeClient` takes the version and password. For v2 it uses HTTP Basic
+  auth (`opencode:<password>`), the `/api` prefix, the v2 session/prompt/form
+  endpoints, and the v2 event shapes; for v1 it keeps the existing behavior.
+- v2 `form.created` events are normalized into the existing `BuilderQuestion`
+  model (the form id, the first field's title/description/options, and the
+  session id + field key needed to reply), so the Builder page's question UI is
+  unchanged.
+- `reply_question` posts the v2 form reply (`{"answer": {field_key: value}}`)
+  or the v1 question reply (`{"answers": [[...]]}`) as appropriate.
+- The v2 event parser maps `session.text.delta`/`session.text.ended` to text
+  events and `session.execution.succeeded`/`failed` to idle/error.
+
+### Consequences
+- The POC works with both opencode v1 and v2; the owner's v2 install is the
+  primary target.
+- No new dependency: Basic auth is a standard `Authorization` header.
+- The v2 API is experimental and may drift; the parser stays tolerant and the
+  stub-server integration test is the drift-mitigation surface.
+- v1 remains supported as a fallback for older installs.
+
+### Alternatives considered
+- **Require v1**: simplest, but the owner's environment is v2 and the docs they
+  referenced are v2; rejected.
+- **Shell out to `opencode run --format json`**: works on both versions, but
+  cannot carry the multi-turn clarifying-question flow or stream partial text;
+  rejected.
+- **Use the v2 web app / SDK**: the v2 SDK is JavaScript; embedding it would add
+  a Node dependency and a second runtime; rejected for a Python POC.
