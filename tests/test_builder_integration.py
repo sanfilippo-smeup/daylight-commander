@@ -1,4 +1,4 @@
-"""End-to-end integration test for the AI dashboard builder (DC-026/DC-031).
+"""End-to-end integration test for the AI dashboard builder (DC-026/DC-031/DC-032).
 
 A stdlib ``http.server`` stub mimics the ``opencode serve`` API with the event
 shapes verified against opencode v1.18.34: ``POST /session``, ``POST
@@ -19,6 +19,15 @@ persists the fenced ```json spec the same way.
 
 Hermetic by construction: loopback only, no ``opencode`` binary, no external
 network, no writes outside ``tmp_path``.
+
+DC-032 drives that same v2 stub at the page level: the real
+:class:`~daylight.components.modules.builder_page.BuilderPage` talks to it with
+its *default* client factory -- the real :class:`OpenCodeClient`, default
+urllib transport, nothing faked in the conversation path -- and the stub's
+reply carries a fenced ```json dashboard specification, so the turn opens the
+native Dashboard tab with real widgets over the build's directory. An
+HTML/JavaScript reply with no json fence fails closed: a precise error, no
+Dashboard tab, nothing executed.
 """
 
 from __future__ import annotations
@@ -41,10 +50,27 @@ from typing import Any
 
 import pytest
 
-from daylight.components.modules.builder_page import extract_spec
+from daylight.app import DaylightApp
+from daylight.components.modules import builder_page
+from daylight.components.modules.builder_page import BUILDER_INSTRUCTION, BuilderPage, extract_spec
+from daylight.components.modules.dashboard_page import DashboardPage
+from daylight.components.stats_charts import BarChart, SummaryCard
 from daylight.managers.dashboard_spec import parse_spec
 from daylight.managers.dashboard_store import DashboardStore
+from daylight.managers.format import human_size
 from daylight.managers.opencode_client import OpenCodeClient, OpenCodeError, OpenCodeServer
+from textual.pilot import Pilot
+
+from test_builder_page import (
+    SIZE,
+    await_workers_settled,
+    make_app,
+    run_async,
+    spy_open_dashboard,
+    submit_prompt,
+    wait_for,
+    wait_for_listing,
+)
 
 #: Seconds an SSE handler may wait for the next event before giving up. The
 #: normal flow always has events or the sentinel waiting, so this is only a
@@ -111,9 +137,6 @@ REPLY_MESSAGE_ID = "msg_stub_reply"
 PRE_QUESTION_DELTAS = ("Reading ", "the data directory…")
 #: The full pre-question text the ``session.text.ended`` event carries.
 PRE_QUESTION_TEXT = "".join(PRE_QUESTION_DELTAS)
-
-#: The reply text, streamed as two deltas before its ``session.text.ended``.
-REPLY_DELTAS = (ASSISTANT_REPLY[:24], ASSISTANT_REPLY[24:])
 
 
 def _text_event(text: str) -> dict[str, Any]:
@@ -322,6 +345,10 @@ class _StubV2OpenCode:
         self.requests: list[tuple[str, str, dict[str, str], Any]] = []
         self.events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.replies: list[tuple[str, Any]] = []
+        #: The reply text streamed after the form reply: prose plus the last
+        #: fenced ```json block (valid turn) or HTML/JS prose with no fence
+        #: (DC-032's invalid turn). Deltas are two chunks of it, split in two.
+        self.reply_text: str = ASSISTANT_REPLY
 
 
 class _StubV2Handler(_StubHandler):
@@ -362,11 +389,13 @@ class _StubV2Handler(_StubHandler):
             self._send_json({})
         elif path == f"/api/session/{SESSION_ID}/form/{FORM_ID}/reply":
             self.stub.replies.append((path, body))
-            # The agent continues: the reply text with the fenced script, then
-            # the turn ends and the stream is closed via the sentinel.
-            for delta in REPLY_DELTAS:
+            # The agent continues: the reply text, then the turn ends and the
+            # stream is closed via the sentinel. The reply is per-stub state;
+            # by default it carries the fenced ```json specification.
+            reply = self.stub.reply_text
+            for delta in (reply[:24], reply[24:]):
                 self.stub.events.put(_v2_delta_event(REPLY_MESSAGE_ID, delta))
-            self.stub.events.put(_v2_text_ended_event(REPLY_MESSAGE_ID, ASSISTANT_REPLY))
+            self.stub.events.put(_v2_text_ended_event(REPLY_MESSAGE_ID, reply))
             self.stub.events.put(_v2_execution_succeeded_event())
             self.stub.events.put(None)
             self._send_empty(204)
@@ -585,6 +614,279 @@ def test_full_turn_from_prompt_to_saved_dashboard_v2(
     assert loaded.directory == str(tmp_path)
     assert loaded.prompt == PROMPT
     assert time.monotonic() - started < 60.0  # a full turn is fast; it never hangs
+
+
+# -- DC-032: the same stub, driven through the real Builder page -------------------
+
+#: The fenced ```json specification for the page-level turn: summary cards and
+#: a bar chart over the directory the build targets (AC1, AC2).
+PAGE_SPEC_JSON = (
+    '{"schema_version": 1, "title": "Directory dashboard", "blocks":'
+    ' [{"kind": "summary_cards", "source": "summary"},'
+    ' {"kind": "bar_chart", "source": "extension_counts", "top_n": 5}]}'
+)
+
+#: The stub's reply for the page turn: prose plus the fenced specification.
+PAGE_REPLY = f"Built natively for you:\n\n```json\n{PAGE_SPEC_JSON}\n```\n"
+
+#: An HTML/JavaScript turn with no fenced ```json block anywhere (AC4).
+HTML_REPLY = (
+    "<!DOCTYPE html>\n"
+    "<html><body><h1>Sales dashboard</h1>\n"
+    "<script>document.write('total size 1500 bytes');</script>\n"
+    "</body></html>\n"
+)
+
+#: The six summary labels, in Stats order -- the binder's fixed contract.
+SUMMARY_LABELS = ("Total size", "Files", "Directories", "Dirs : files", "Hidden", "Symlinks")
+
+
+def _tree(tmp_path: Path) -> Path:
+    """The directory the build targets: five files and one subdirectory (AC2)."""
+    root = tmp_path / "data"
+    root.mkdir(exist_ok=True)
+    for name, size in (
+        ("a.csv", 100),
+        ("b.csv", 200),
+        ("c.csv", 300),
+        ("main.py", 400),
+        ("util.py", 500),
+    ):
+        (root / name).write_text("x" * size, encoding="utf-8")
+    (root / "sub").mkdir(exist_ok=True)
+    return root
+
+
+class _StubServerHandle:
+    """The running v2 stub, presented as the page's embedded server.
+
+    The page asks its server for ``(base_url, api_version, password)``; the
+    stub fixture owns the real server and its deterministic teardown, so
+    ``start`` hands out the stub's loopback URL and ``stop`` only records the
+    page's call.
+    """
+
+    def __init__(self, stub: _StubV2OpenCode) -> None:
+        self._stub = stub
+        self.api_version = "v2"
+        self.password = STUB_PASSWORD
+        self.stops = 0
+
+    def start(self) -> str:
+        """The stub is already listening: its loopback URL, nothing spawned."""
+        return self._stub.base_url
+
+    def stop(self) -> None:
+        self.stops += 1  # the fixture tears the real server down
+
+
+def _install_real_v2_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stub: _StubV2OpenCode
+) -> DashboardStore:
+    """Put a Builder tab in the app that talks to the stub with the real client.
+
+    Only the ``server_factory`` seam is replaced (the stub plays the ``opencode``
+    server, whose binary AC7 forbids): the page's *default* client factory still
+    builds the real :class:`OpenCodeClient` -- default urllib transport, the v2
+    API version and the stub's Basic-auth password passed through -- and the
+    store is rooted in ``tmp_path``.
+    """
+    handle = _StubServerHandle(stub)
+    store = DashboardStore(root=tmp_path / "dashboards")
+
+    class RealClientBuilderPage(BuilderPage):
+        """The Builder page the test app builds, wired to the running stub."""
+
+        def __init__(self) -> None:
+            super().__init__(server_factory=lambda: handle, store=store)
+
+    monkeypatch.setattr(
+        DaylightApp, "PAGES", {**DaylightApp.PAGES, "builder": RealClientBuilderPage}
+    )
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _bounded_answer_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bound the pending-answer wait for the whole module (DC-031 hang guard)."""
+    monkeypatch.setattr(builder_page, "ANSWER_TIMEOUT_SECONDS", 10.0)
+
+
+async def _answer_form(pilot: Pilot, page: BuilderPage) -> None:
+    """Answer the stub's clarifying form with its first option (AC1)."""
+    await wait_for(pilot, lambda: page._question_panel.display)
+    page._question_options.focus()
+    await pilot.pause()  # focus is deferred; give it a turn to land
+    await pilot.press("enter")
+
+
+@run_async
+async def test_v2_full_turn_through_the_builder_page_opens_a_native_dashboard(
+    tmp_path: Path, stub_opencode_v2: _StubV2OpenCode, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real v2 client, real Builder page: prompt → form → spec → Dashboard tab.
+
+    The whole turn runs over a real loopback socket through the page's default
+    client factory (AC1); the stub plays the opencode server, whose only job is
+    to stream the turn the live v2 server streams.
+    """
+    tree = _tree(tmp_path)
+    stub_opencode_v2.reply_text = PAGE_REPLY
+    _install_real_v2_page(monkeypatch, tmp_path, stub_opencode_v2)
+    app = make_app(tree)
+    calls = spy_open_dashboard(monkeypatch, app)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        await pilot.press("ctrl+6")
+        await wait_for(pilot, lambda: app.active_page == "builder")
+        page = app._pages["builder"]
+        assert isinstance(page, BuilderPage)
+        await submit_prompt(pilot, page, PROMPT)
+        await _answer_form(pilot, page)
+        await wait_for(pilot, lambda: not page._busy)
+        await wait_for(pilot, lambda: app.tabs.get_tab("dashboard") is not None)
+        assert app.active_page == "dashboard"
+
+        # The stub saw exactly the v2 requests the page's flow implies; the
+        # prompt body carried the whole Builder instruction (AC1).
+        requests = stub_opencode_v2.requests
+        assert [(method, path) for method, path, _query, _body in requests] == [
+            ("POST", "/api/session"),
+            ("GET", "/api/event"),
+            ("POST", f"/api/session/{SESSION_ID}/prompt"),
+            ("POST", f"/api/session/{SESSION_ID}/form/{FORM_ID}/reply"),
+        ]
+        assert requests[0][3] == {"title": PROMPT, "location": {"directory": str(tree)}}
+        assert requests[2][3] == {
+            "text": f"{BUILDER_INSTRUCTION}\n\nUser request:\n{PROMPT}"
+        }
+        assert requests[3][3] == {"answer": {FORM_FIELD_KEY: ANSWER}}
+
+        # The Dashboard tab opened exactly once, for the build's directory (AC3).
+        assert len(calls) == 1
+        assert calls[0][0] == parse_spec(PAGE_SPEC_JSON)
+        assert calls[0][1] == tree
+
+        # Native widgets with the stub directory's data: six summary cards and
+        # the extension bar chart; no HTML, code or fences are on screen (AC2).
+        dashboard = app._pages["dashboard"]
+        assert isinstance(dashboard, DashboardPage)
+        await wait_for(pilot, lambda: dashboard.stats is not None)
+        await wait_for(pilot, lambda: len(list(dashboard.query(SummaryCard))) == 6)
+        assert dashboard.title_text.startswith("Directory dashboard — ")
+        assert "```" not in dashboard.title_text
+        assert "<script" not in dashboard.title_text
+        stats = dashboard.stats
+        assert stats is not None
+        assert stats.extension_counts == {"csv": 3, "py": 2}
+        assert stats.total_size == 1500
+        expected_cards = {
+            "Total size": human_size(1500),
+            "Files": "5",
+            "Directories": "1",
+            "Dirs : files": "1:5",
+            "Hidden": "0",
+            "Symlinks": "0",
+        }
+        for label, value in expected_cards.items():
+            card = dashboard.summary_card(label)
+            assert card is not None, label
+            assert card.card_value == value, label
+        chart = dashboard.query_one(BarChart)
+        assert chart.rows == [("csv", 3), ("py", 2)]
+        await await_workers_settled(pilot, page, what="v2 page turn")
+
+
+@run_async
+async def test_v2_generated_dashboard_saves_and_reloads_through_the_store(
+    tmp_path: Path, stub_opencode_v2: _StubV2OpenCode, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl+S saves the generated spec; Ctrl+L reopens it identically (AC3, AC6)."""
+    tree = _tree(tmp_path)
+    stub_opencode_v2.reply_text = PAGE_REPLY
+    store = _install_real_v2_page(monkeypatch, tmp_path, stub_opencode_v2)
+    app = make_app(tree)
+    calls = spy_open_dashboard(monkeypatch, app)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        await pilot.press("ctrl+6")
+        await wait_for(pilot, lambda: app.active_page == "builder")
+        page = app._pages["builder"]
+        assert isinstance(page, BuilderPage)
+        await submit_prompt(pilot, page, PROMPT)
+        await _answer_form(pilot, page)
+        await wait_for(pilot, lambda: not page._busy)
+        assert len(calls) == 1
+
+        # The build switched to the Dashboard tab; the user returns to save.
+        await pilot.press("ctrl+6")
+        await wait_for(pilot, lambda: app.active_page == "builder")
+
+        await pilot.press("ctrl+s")
+        await wait_for(pilot, lambda: len(store.list()) == 1)
+        await wait_for(pilot, lambda: page._dashboards.option_count == 1)
+        artifact = store.list()[0]
+        assert artifact.name == PROMPT
+        assert artifact.prompt == PROMPT
+        assert artifact.spec is not None and artifact.spec == calls[0][0]
+        assert artifact.directory == str(tree)
+        assert artifact.legacy is False
+
+        page._dashboards.highlighted = 0
+        await pilot.press("ctrl+l")
+        await wait_for(pilot, lambda: len(calls) == 2)
+        assert calls[1][0] == calls[0][0]  # the identical spec round-trips
+        assert calls[1][1] == tree
+        assert page._prompt.value == PROMPT
+        await wait_for(pilot, lambda: app.active_page == "dashboard")
+        dashboard = app._pages["dashboard"]
+        assert isinstance(dashboard, DashboardPage)
+        assert dashboard.directory == tree
+        await wait_for(pilot, lambda: dashboard.stats is not None)
+        await await_workers_settled(pilot, page, what="v2 save/load")
+
+
+@run_async
+async def test_v2_invalid_agent_reply_fails_closed(
+    tmp_path: Path, stub_opencode_v2: _StubV2OpenCode, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An HTML/JS reply with no json fence fails closed (AC4).
+
+    Precise error on screen, no Dashboard tab, no spec, nothing executed; the
+    stub tears down deterministically (asserted by its own fixture).
+    """
+    tree = _tree(tmp_path)
+    stub_opencode_v2.reply_text = HTML_REPLY
+    _install_real_v2_page(monkeypatch, tmp_path, stub_opencode_v2)
+    app = make_app(tree)
+    calls = spy_open_dashboard(monkeypatch, app)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        await pilot.press("ctrl+6")
+        await wait_for(pilot, lambda: app.active_page == "builder")
+        page = app._pages["builder"]
+        assert isinstance(page, BuilderPage)
+        await submit_prompt(pilot, page, PROMPT)
+        await _answer_form(pilot, page)
+        await wait_for(pilot, lambda: not page._busy)
+
+        # The precise fail-closed message is on screen (FR-804 shape).
+        assert "no fenced ```json dashboard specification" in page.transcript_text
+        assert "nothing was executed" in page.transcript_text
+
+        # No Dashboard tab, no spec, nothing executed -- the transport saw the
+        # same four requests as the valid turn and not one more (AC4).
+        assert calls == []
+        assert page._current_spec is None
+        assert app.tabs.get_tab("dashboard") is None
+        assert app.active_page == "builder"
+        assert [(method, path) for method, path, _query, _body in stub_opencode_v2.requests] == [
+            ("POST", "/api/session"),
+            ("GET", "/api/event"),
+            ("POST", f"/api/session/{SESSION_ID}/prompt"),
+            ("POST", f"/api/session/{SESSION_ID}/form/{FORM_ID}/reply"),
+        ]
+        await await_workers_settled(pilot, page, what="invalid turn")
 
 
 def _pid_is_dead(pidfile: Path) -> bool:

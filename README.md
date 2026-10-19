@@ -35,10 +35,11 @@ application.
   top extensions, a modification calendar heatmap, a size histogram,
   permission masks, and the largest / oldest / newest files.
 - **AI dashboard builder** — a `Ctrl+6` Builder tab where you describe a
-  dashboard in natural language; an embedded `opencode` agent writes the
-  Python (asking clarifying questions when it needs to), and the generated
-  script runs in a sandbox with its output streamed live into a preview pane.
-  Dashboards are saved and re-run with `Ctrl+S` / `Ctrl+L` / `Ctrl+R`.
+  dashboard in natural language; an embedded `opencode` agent returns one
+  declarative dashboard specification (a fenced JSON block, with clarifying
+  questions when it needs to), and the dashboard opens in a dedicated Dashboard
+  tab rendered natively with the app's own components and theme. Dashboards
+  are saved and reloaded with `Ctrl+S` / `Ctrl+L` and refreshed with `Ctrl+R`.
   Requires the `opencode` CLI (v2, with v1 as a fallback); without it the tab
   shows a hint and the rest of the app is unaffected.
 - **External launches** — open files with the system handler, edit in
@@ -148,9 +149,9 @@ bindings.
 
 The Builder tab (`Ctrl+6`) generates a dashboard from a plain-language
 description: you describe what you want to see, an embedded
-[`opencode`](https://opencode.ai) agent writes a self-contained Python script
-for it, and the script's output streams live into a preview pane. It is a
-proof-of-concept (PRD §5.8, ADR-014).
+[`opencode`](https://opencode.ai) agent answers with a single declarative
+dashboard specification — one fenced JSON block — and the dashboard opens in a
+native Dashboard tab. It is a proof-of-concept (PRD §5.8, ADR-016).
 
 **Prerequisite.** The `opencode` CLI must be installed and on your `PATH` —
 the app starts `opencode serve` on loopback automatically when you build.
@@ -172,22 +173,47 @@ does, the Builder degrades gracefully instead of crashing.
    CSV files in this directory as a dashboard"*), and press `Enter`.
 2. The agent may ask a clarifying question; pick one of the offered options or
    type a free-text answer, and the build continues.
-3. The agent replies with a Python script. It runs in a sandbox with the
-   active pane's directory as its working directory, and its stdout streams
-   into the preview as it is produced.
-4. `Ctrl+S` saves the dashboard, `Ctrl+L` loads a saved one, and `Ctrl+R`
-   re-runs the current script.
+3. The agent replies with exactly one fenced JSON block — for example:
 
-**Storage.** Saved dashboards are JSON files (name, prompt, script,
-timestamps) under `$XDG_DATA_HOME/daylight/dashboards`, falling back to
-`~/.local/share/daylight/dashboards`.
+   ```json
+   {
+     "schema_version": 1,
+     "title": "My directory",
+     "blocks": [
+       { "kind": "summary_cards", "source": "summary" },
+       { "kind": "bar_chart", "source": "extension_counts", "top_n": 10 }
+     ]
+   }
+   ```
 
-**POC limitations.** The sandbox is best-effort: a generated script runs as a
-local subprocess with a wall-clock timeout and POSIX resource limits where
-available, but with the permissions of your user — there is no OS-level
-isolation. Generated scripts are limited to the Python standard library (no
-arbitrary package installation), and the feature is single-user and local —
-no remote or multi-user use.
+   The Builder validates it and opens the Dashboard tab: one block per
+   specification entry, rendered natively from the statistics of the directory
+   you started the build in, with the app's own components and theme tokens.
+   Summary cards, bar charts, share bars, histograms, heatmap and tables are
+   real widgets — no ANSI output, HTML, SVG or generated code is ever rendered
+   or executed. If the reply carries no valid specification, the Builder says
+   exactly what was rejected and nothing is opened or run.
+
+4. `Ctrl+S` saves the specification together with its directory and the prompt;
+   `Ctrl+L` reopens a saved dashboard in the Dashboard tab; `Ctrl+R` refreshes
+   the on-screen dashboard by recomputing its bound directory.
+
+**Storage.** Saved dashboards are JSON files (name, prompt, specification,
+directory, timestamps) under `$XDG_DATA_HOME/daylight/dashboards`, falling back
+to `~/.local/share/daylight/dashboards`. Artifacts from Revision 5 carried a
+generated Python *script* instead: they stay listed and marked "(legacy)" and
+are never rendered or executed by the app.
+
+**POC limitations.** The specification is a strict allowlist: the agent
+describes the dashboard declaratively — summary cards, bar charts, share bars,
+histograms, heatmaps and tables — and every number on screen comes from the
+app's own statistics for that one directory. Anything outside the contract (an
+unknown block kind or data source, another schema version, code) is rejected
+with a precise error; no generated code is ever executed, and the dashboard is
+bound to a single directory until you refresh (`Ctrl+R`) or load again
+(`Ctrl+L`). The feature is single-user and local (no remote or multi-user
+use), and the opencode v2 API is experimental upstream, so agent replies are
+always validated, never trusted.
 
 ## How this project was made
 
