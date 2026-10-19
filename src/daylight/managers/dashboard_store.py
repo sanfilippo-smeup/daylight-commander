@@ -1,11 +1,16 @@
-"""Per-user persistence for saved AI dashboards (DC-024, FR-806, ADR-014).
+"""Per-user persistence for saved AI dashboards (DC-024/DC-031, FR-806, ADR-016).
 
 A dashboard is one JSON file under the user's data directory
 (``$XDG_DATA_HOME/daylight/dashboards``, falling back to
 ``~/.local/share/daylight/dashboards``), holding the name, the prompt that
-produced it, the generated script and timestamps. :class:`DashboardStore`
-writes, lists (newest first), loads and deletes those files; an explicit
-``root`` overrides the default location so tests stay inside ``tmp_path``.
+produced it, the validated dashboard spec and the directory it was built for,
+plus timestamps. Revision-5 files hold a generated *script* instead; those
+stay readable -- they come back as ``legacy=True`` with ``spec=None`` and are
+never rendered or executed (ADR-016). A file whose spec fails
+:func:`parse_spec` validation is unreadable, exactly like corrupt JSON.
+:class:`DashboardStore` writes, lists (newest first), loads and deletes those
+files; an explicit ``root`` overrides the default location so tests stay
+inside ``tmp_path``.
 
 Like every manager, this module never imports UI code (ADR-003, FR-808).
 """
@@ -20,7 +25,8 @@ from pathlib import Path
 from time import time
 from typing import Any
 
-from daylight.models import DashboardArtifact
+from daylight.managers.dashboard_spec import DashboardSpecError, parse_spec
+from daylight.models import DashboardArtifact, DashboardSpec
 
 __all__ = ["DashboardStore", "default_root"]
 
@@ -54,15 +60,18 @@ class DashboardStore:
     def __init__(self, root: str | Path | None = None) -> None:
         self.root = Path(root) if root is not None else default_root()
 
-    def save(self, *, name: str, prompt: str, script: str) -> DashboardArtifact:
-        """Write one JSON artifact and return it (AC8)."""
+    def save(
+        self, *, name: str, prompt: str, spec: DashboardSpec, directory: str
+    ) -> DashboardArtifact:
+        """Write one JSON artifact carrying the spec and its directory (AC6)."""
         self.root.mkdir(parents=True, exist_ok=True)
         now = time()
         artifact = DashboardArtifact(
             id=uuid.uuid4().hex,
             name=name,
             prompt=prompt,
-            script=script,
+            spec=spec,
+            directory=directory,
             created=now,
             modified=now,
         )
@@ -113,15 +122,40 @@ def _dumps(artifact: DashboardArtifact) -> str:
         "id": artifact.id,
         "name": artifact.name,
         "prompt": artifact.prompt,
-        "script": artifact.script,
+        "spec": _spec_data(artifact.spec),
+        "directory": artifact.directory,
         "created": artifact.created,
         "modified": artifact.modified,
     }
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
+def _spec_data(spec: DashboardSpec) -> dict[str, Any]:
+    """The JSON shape of one spec: exactly what :func:`parse_spec` re-accepts."""
+    return {
+        "schema_version": spec.schema_version,
+        "title": spec.title,
+        "blocks": [
+            {
+                "kind": block.kind,
+                "source": block.source,
+                "title": block.title,
+                "top_n": block.top_n,
+                "color_token": block.color_token,
+            }
+            for block in spec.blocks
+        ],
+    }
+
+
 def _read_artifact(path: Path) -> DashboardArtifact | None:
-    """Parse one artifact file; ``None`` when it is missing or malformed."""
+    """Parse one artifact file; ``None`` when it is unreadable (AC7).
+
+    Three outcomes: a Revision-6 spec file (the spec must validate), a
+    Revision-5 script-only file (``legacy=True``, ``spec=None``) and anything
+    else -- corrupt JSON, a wrong shape, or a spec that fails
+    :func:`parse_spec` -- which is unreadable and treated as absent.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -129,14 +163,36 @@ def _read_artifact(path: Path) -> DashboardArtifact | None:
     if not isinstance(data, dict):
         return None
     try:
-        return DashboardArtifact(
-            id=str(data["id"]),
-            name=str(data["name"]),
-            prompt=str(data["prompt"]),
-            script=str(data["script"]),
-            created=float(data["created"]),
-            modified=float(data["modified"]),
-        )
+        common: dict[str, Any] = {
+            "id": str(data["id"]),
+            "name": str(data["name"]),
+            "prompt": str(data["prompt"]),
+            "created": float(data["created"]),
+            "modified": float(data["modified"]),
+        }
     except (KeyError, TypeError, ValueError):
         logger.debug("skipping malformed dashboard file: %s", path, exc_info=True)
         return None
+    if "spec" in data:
+        try:
+            spec = parse_spec(data["spec"])
+        except DashboardSpecError:
+            # A spec that fails validation is unreadable, not legacy (AC7).
+            logger.debug("skipping dashboard file with an invalid spec: %s", path, exc_info=True)
+            return None
+        return DashboardArtifact(
+            spec=spec,
+            directory=str(data.get("directory", "")),
+            legacy=False,
+            **common,
+        )
+    if "script" in data:  # a Revision-5 script-only file: legacy, never run (AC7)
+        return DashboardArtifact(
+            spec=None,
+            directory=str(data.get("directory", "")),
+            legacy=True,
+            script=str(data["script"]),
+            **common,
+        )
+    logger.debug("skipping dashboard file with neither spec nor script: %s", path)
+    return None

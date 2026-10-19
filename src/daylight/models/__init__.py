@@ -310,14 +310,23 @@ class SandboxResult:
 
 @dataclass(frozen=True)
 class DashboardArtifact:
-    """One saved AI dashboard: name, prompt, script and timestamps (FR-806)."""
+    """One saved AI dashboard: name, prompt, spec and timestamps (FR-806).
+
+    A Revision-6 artifact carries the validated :attr:`spec` and the
+    :attr:`directory` it was built for. A Revision-5 artifact instead carries
+    only :attr:`script` and is marked :attr:`legacy`: it stays readable but is
+    never rendered or executed (DC-031, ADR-016).
+    """
 
     id: str
     name: str
     prompt: str
-    script: str
     created: float
     modified: float
+    spec: DashboardSpec | None = None
+    directory: str = ""
+    legacy: bool = False
+    script: str = ""
 
 
 @dataclass(frozen=True)
