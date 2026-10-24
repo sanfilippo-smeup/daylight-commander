@@ -23,6 +23,7 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "goto_settings": "ctrl+4",
     "goto_stats": "ctrl+5",
     "goto_builder": "ctrl+6",
+    "goto_filetypes": "ctrl+7",
     "up": "up",
     "down": "down",
     "switch_panel": "ctrl+t",

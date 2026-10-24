@@ -5,6 +5,23 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **File types tab** (`Ctrl+7`) — ranks the active pane's tree by file
+  extension: summary cards for files / distinct types / scan time, and a
+  top-20 bar chart that folds extensionless files into a `(none)` row. It
+  reuses the Stats worker scan and its entry cap, caches results per
+  directory, follows the active pane while it is visible, and refreshes with
+  `Ctrl+R`.
+
+### Changed
+
+- The standalone `python -m daylight.filetype_dashboard` proof-of-concept is
+  replaced by the in-app tab; the ranking rules stay in
+  `managers/filetypes.py`, so they are unit-testable without a UI.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added
