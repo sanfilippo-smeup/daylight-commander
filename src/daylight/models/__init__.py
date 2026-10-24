@@ -9,11 +9,21 @@ from typing import Mapping
 
 __all__ = [
     "AppConfig",
+    "BuilderEvent",
+    "BuilderOption",
+    "BuilderQuestion",
+    "DashboardArtifact",
+    "DashboardBlock",
+    "DashboardBlockData",
+    "DashboardSpec",
+    "DashboardSummaryValue",
+    "DashboardTable",
     "DirEntry",
     "DirectoryStats",
     "FileEntry",
     "FileProperties",
     "FileStat",
+    "SandboxResult",
     "Theme",
     "ViewDocument",
     "VIEW_KINDS",
@@ -93,14 +103,14 @@ class DirEntry:
 class ViewDocument:
     """What the internal viewer should draw for one file (DC-004).
 
-    Produced only by :mod:`daylight.managers.content`, so the viewer widget never
-    decides *how* a format is read: it only renders :attr:`kind` and shows
-    :attr:`notice` when the content had to be degraded.
+        Produced only by :mod:`daylight.managers.content`, so the viewer widget never
+        decides *how* a format is read: it only renders :attr:`kind` and shows
+        :attr:`notice` when the content had to be degraded.
 
-For ``markdown``/``json`` :attr:`text` is the formatted document and
-    is bounded by ``PRETTY_LIMIT``; :attr:`truncated` then says so. For ``text``
-    (YAML included) the widget asks the manager for a window of lines instead,
-    because a source file must never be materialised whole.
+    For ``markdown``/``json`` :attr:`text` is the formatted document and
+        is bounded by ``PRETTY_LIMIT``; :attr:`truncated` then says so. For ``text``
+        (YAML included) the widget asks the manager for a window of lines instead,
+        because a source file must never be materialised whole.
     """
 
     kind: str
@@ -231,3 +241,154 @@ class DirectoryStats:
     def dirs_files_ratio(self) -> str:
         """The ``dirs:files`` ratio the summary card shows, e.g. ``2:5``."""
         return f"{self.directory_count}:{self.file_count}"
+
+
+@dataclass(frozen=True)
+class BuilderOption:
+    """One selectable choice of an AI builder clarifying question (DC-024).
+
+    Mirrors the opencode ``QuestionOption`` shape: what the user sees
+    (:attr:`label`) and, optionally, why they would pick it
+    (:attr:`description`).
+    """
+
+    label: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class BuilderQuestion:
+    """One pending clarifying question asked by the AI builder (DC-024).
+
+    Normalized from an opencode question request (which may bundle several
+    questions): :attr:`id` is the request id used to reply, the remaining
+    fields describe its first question. ``multiple`` allows several options to
+    be selected, ``custom`` allows a free-text answer.
+    """
+
+    id: str
+    header: str
+    question: str
+    options: tuple[BuilderOption, ...] = ()
+    multiple: bool = False
+    custom: bool = False
+    #: opencode v2 form routing (ADR-015): the session that owns the form and
+    #: the field key the answer must be keyed by. Empty for v1 questions.
+    session_id: str = ""
+    field_key: str = ""
+
+
+@dataclass(frozen=True)
+class BuilderEvent:
+    """One parsed event of an AI builder turn (DC-024).
+
+    :attr:`kind` is ``"text"`` for streamed assistant text (in :attr:`text`),
+    ``"question"`` for a pending clarifying question (in :attr:`question`) and
+    ``"idle"`` when the session went idle, i.e. the turn is over.
+    """
+
+    kind: str
+    text: str = ""
+    question: BuilderQuestion | None = None
+
+
+@dataclass(frozen=True)
+class SandboxResult:
+    """Outcome of one sandboxed script run (DC-024).
+
+    ``exit_code`` is the script's exit status (negative when a signal killed
+    it), ``timed_out`` is True when the wall-clock timeout had to kill it, and
+    ``duration_seconds`` is the observed wall-clock time.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class DashboardArtifact:
+    """One saved AI dashboard: name, prompt, spec and timestamps (FR-806).
+
+    A Revision-6 artifact carries the validated :attr:`spec` and the
+    :attr:`directory` it was built for. A Revision-5 artifact instead carries
+    only :attr:`script` and is marked :attr:`legacy`: it stays readable but is
+    never rendered or executed (DC-031, ADR-016).
+    """
+
+    id: str
+    name: str
+    prompt: str
+    created: float
+    modified: float
+    spec: DashboardSpec | None = None
+    directory: str = ""
+    legacy: bool = False
+    script: str = ""
+
+
+@dataclass(frozen=True)
+class DashboardBlock:
+    """One block of a parsed AI dashboard specification (DC-029, ADR-016).
+
+    Built only by :mod:`daylight.managers.dashboard_spec`, so ``kind`` and
+    ``source`` are always an allowlisted pair, ``top_n`` is a true integer
+    inside ``1..50`` and ``color_token`` a known theme token. ``title`` may be
+    empty: the Dashboard page then shows its own per-kind default.
+    """
+
+    kind: str
+    source: str
+    title: str = ""
+    top_n: int = 8
+    color_token: str = "accent"
+
+
+@dataclass(frozen=True)
+class DashboardSpec:
+    """A parsed AI dashboard specification (DC-029, ADR-016).
+
+    ``schema_version`` is explicit so the contract can evolve without silently
+    accepting documents written for another version. Built only by
+    :func:`daylight.managers.dashboard_spec.parse_spec`.
+    """
+
+    schema_version: int
+    title: str
+    blocks: tuple[DashboardBlock, ...]
+
+
+@dataclass(frozen=True)
+class DashboardSummaryValue:
+    """Render data of one summary card: label, displayed value, optional detail."""
+
+    label: str
+    value: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class DashboardTable:
+    """Render data of a table block: a header row and string cell rows."""
+
+    headers: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class DashboardBlockData:
+    """One bound block: what the Dashboard page renders for it (DC-029).
+
+    The binder fills exactly the member matching the block's source --
+    :attr:`summary` for ``summary``, :attr:`rows` for the ranked series sources
+    and ``size_buckets``, :attr:`days` for ``daily_counts`` and :attr:`table`
+    for the table sources -- and leaves the others empty.
+    """
+
+    block: DashboardBlock
+    summary: tuple[DashboardSummaryValue, ...] = ()
+    rows: tuple[tuple[str, int], ...] = ()
+    days: Mapping[date, int] | None = None
+    table: DashboardTable | None = None

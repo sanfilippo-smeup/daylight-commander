@@ -23,6 +23,22 @@ Since the v1.0.0 delivery, the product repository gained documentation updates
 handover plus new README sections describing the credits and the
 multi-agent workflow used to build the project.
 
+## Releases after 1.0.0
+
+This handover body is the v1.0.0 delivery record. The releases below were cut
+afterwards from the same repository.
+
+| Release | Date | Scope | Spec baseline |
+| --- | --- | --- | --- |
+| 1.0.1 | 2026-10-16 | Documentation and specification patch; **no product-code change** (README sections, this handover, FR-207/FR-301 wording fixes) | PRD Revision 3 |
+| 1.1.0 | 2026-10-16 | Read-only **Stats** tab (`Ctrl+5`) with dependency-free charts computed on a worker thread and a safety cap | PRD Revision 4, ADR-013 |
+| 1.2.0 | 2026-10-22 | **AI dashboard builder**: Builder tab (`Ctrl+6`), declarative specification contract, native **Dashboard** tab, opencode v2 with a v1 fallback; saved specifications under `$XDG_DATA_HOME/daylight/dashboards` (Revision-5 script artifacts are legacy and inert) | PRD Revision 6, ADR-014 / ADR-015 / ADR-016 |
+
+Release 1.2.0 was developed on `feat/ai-dashboard-builder` and delivers cards
+DC-024 … DC-032. Its gates were `uv run ruff check .` clean and
+`uv run pytest -q` — 802 passed, including 16 UI snapshots. Assets:
+`daylight_commander-1.2.0-py3-none-any.whl` and `.tar.gz`.
+
 ## Triad+ control loop
 
 The project was driven by Triad+ — a lightweight engineering loop that

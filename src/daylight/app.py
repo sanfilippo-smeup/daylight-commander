@@ -31,6 +31,8 @@ from textual.widgets import Tabs
 from daylight import themes
 from daylight.components import file_table
 from daylight.components.command_palette import DaylightCommandProvider, PaletteCommand
+from daylight.components.modules.builder_page import BuilderPage
+from daylight.components.modules.dashboard_page import DashboardPage
 from daylight.components.modules.file_list import FilesPage, LocationChanged
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.settings_page import SettingsPage
@@ -39,7 +41,7 @@ from daylight.components.modules.viewers_page import ViewersPage
 from daylight.components.shell import KeyHintBar, ShellHeader, format_key
 from daylight.config import DEFAULT_KEYBINDINGS
 from daylight.managers import ConfigManager, FileManager
-from daylight.models import AppConfig
+from daylight.models import AppConfig, DashboardSpec
 
 __all__ = ["DEFAULT_PAGE", "PAGE_LABELS", "DaylightApp"]
 
@@ -50,6 +52,7 @@ PAGE_LABELS: dict[str, str] = {
     "properties": "Properties",
     "settings": "Settings",
     "stats": "Stats",
+    "builder": "Builder",
 }
 
 #: The page the app starts on.
@@ -81,6 +84,8 @@ class DaylightApp(App[None]):
         "styles/operations.tcss",
         "styles/viewer.tcss",
         "styles/stats.tcss",
+        "styles/builder.tcss",
+        "styles/dashboard.tcss",
     ]
     BINDINGS = [
         # The only two app-wide hints the footer has room for; the tab keys are
@@ -125,18 +130,28 @@ class DaylightApp(App[None]):
             show=False,
             id="goto_stats",
         ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_builder"],
+            "goto_builder",
+            "Builder",
+            show=False,
+            id="goto_builder",
+        ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
     COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
     COMMAND_PALETTE_BINDING: ClassVar[str] = DEFAULT_KEYBINDINGS["command_palette"]
 
-    #: The page class behind each tab (ADR-005).
+    #: The page class behind each tab (ADR-005). ``dashboard`` is the dynamic
+    #: DC-030 page: it is mounted and its tab added only when a spec is opened.
     PAGES: ClassVar[dict[str, type[Widget]]] = {
         "files": FilesPage,
         "viewers": ViewersPage,
         "properties": PropertiesPage,
         "settings": SettingsPage,
         "stats": StatsPage,
+        "builder": BuilderPage,
+        "dashboard": DashboardPage,
     }
 
     #: App-level actions offered by the palette: ``(title, action, description)``.
@@ -146,6 +161,7 @@ class DaylightApp(App[None]):
         ("Go to Properties", "goto_properties", "Describe the entry across the whole pane"),
         ("Go to Settings", "goto_settings", "Theme and keybindings"),
         ("Go to Stats", "goto_stats", "Directory statistics for the active pane"),
+        ("Go to Builder", "goto_builder", "Build a dashboard with AI"),
         ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
     )
 
@@ -167,6 +183,9 @@ class DaylightApp(App[None]):
         #: Pages that have been mounted, by page name. A page is mounted once and
         #: then only shown or hidden, so its state outlives the tab.
         self._pages: dict[str, Widget] = {}
+        #: Whether the one dynamic Dashboard tab has been requested (DC-030):
+        #: it is added once through the shell and activated once attached.
+        self._dashboard_tab_requested: bool = False
         self.header = ShellHeader(self.TITLE, PAGE_LABELS, active=DEFAULT_PAGE)
         self.hints = KeyHintBar()
         super().__init__()
@@ -333,7 +352,10 @@ class DaylightApp(App[None]):
         for other, widget in self._pages.items():
             widget.display = other == name
         self.active_page = name
-        if self.tabs.active != name:
+        # The tab is activated only while it exists: the Dashboard tab is added
+        # asynchronously after the first ``open_dashboard`` (DC-030), so an
+        # early show of the page must not assume the tab is already there.
+        if self.tabs.active != name and self.tabs.get_tab(name) is not None:
             self.tabs.active = name
         self._prepare_page(page)
         self.update_path()
@@ -360,6 +382,15 @@ class DaylightApp(App[None]):
             # A fresh show recomputes only what the per-directory cache has not
             # already got (DC-023, AC6); the page is focusable so ctrl+r works.
             page.refresh_stats()
+            page.focus()
+        elif isinstance(page, BuilderPage):
+            # The keyboard goes straight to the prompt, so the user can type
+            # the moment the tab opens (DC-025); its ctrl+s/l/r keys bubble
+            # from the focused input to the page.
+            page.focus_prompt()
+        elif isinstance(page, DashboardPage):
+            # The dashboard keeps the directory it was opened with (DC-030,
+            # AC6); only the keyboard comes back so ctrl+r reaches the page.
             page.focus()
 
     @on(Tabs.TabActivated)
@@ -412,6 +443,48 @@ class DaylightApp(App[None]):
         """``ctrl+5``: show the Stats page (DC-023)."""
         self.show_page("stats")
 
+    def action_goto_builder(self) -> None:
+        """``ctrl+6``: show the Builder page (DC-025)."""
+        self.show_page("builder")
+
+    def action_goto_dashboard(self) -> None:
+        """Palette: show the Dashboard tab (DC-030); offered once a dashboard exists."""
+        self.show_page("dashboard")
+
+    # -- the AI dashboard (DC-030) -----------------------------------------
+
+    def open_dashboard(self, spec: DashboardSpec, directory: Path | str) -> None:
+        """Open — or reuse — the Dashboard tab for ``spec`` over ``directory`` (AC1).
+
+        One page instance and one tab serve every dashboard: the first call
+        mounts the page and asks the shell for the Dashboard tab, later calls
+        bind the new spec over its own directory and recompute. The tab is
+        added through the shell and activated only once attached, because
+        ``Tabs.add_tab`` does not make a tab exist synchronously.
+        """
+        try:
+            content = self.query_one("#content")
+        except NoMatches:
+            return  # the shell is not composed yet; there is nothing to open into
+        page = self._pages.get("dashboard")
+        if not isinstance(page, DashboardPage):
+            page = self._make_page("dashboard")
+            self._pages["dashboard"] = page
+        if not page.is_mounted:
+            content.mount(page)
+        page.set_dashboard(spec, Path(directory))
+        self.show_page("dashboard")
+        if not self._dashboard_tab_requested:
+            self._dashboard_tab_requested = True
+            self.call_next(self._attach_dashboard_tab)
+
+    async def _attach_dashboard_tab(self) -> None:
+        """Add the one Dashboard tab through the shell, then activate it (AC1)."""
+        if self.tabs.get_tab("dashboard") is None:
+            await self.header.add_page_tab("dashboard", "Dashboard")
+        if self.tabs.active != "dashboard":
+            self.tabs.active = "dashboard"
+
     def action_next_theme(self) -> None:
         """Switch to the next theme in the catalogue."""
         names = themes.theme_names()
@@ -429,7 +502,8 @@ class DaylightApp(App[None]):
         method = getattr(page, f"action_{action}", None)
         if method is None:
             self.notify(
-                f"no action {action!r} on the {PAGE_LABELS[name]} page", severity="warning"
+                f"no action {action!r} on the {PAGE_LABELS.get(name, name.title())} page",
+                severity="warning",
             )
             return
         method()
@@ -557,6 +631,13 @@ class DaylightApp(App[None]):
             commands.append(
                 PaletteCommand(title, description, partial(self.call_next, self.run_action, action))
             )
+            if action == "goto_builder":
+                # The Dashboard tab exists only once a dashboard was opened
+                # (DC-030), and so does its "go to" entry; it sits with the
+                # other tab switches rather than in a second "go to" row.
+                dashboard_entry = self._dashboard_palette_entry()
+                if dashboard_entry is not None:
+                    commands.append(dashboard_entry)
         overrides = self.app_config.keybindings
         for binding in Binding.make_bindings(list(self.BINDINGS)):
             key = overrides.get(binding.id or "", binding.key)
@@ -587,4 +668,31 @@ class DaylightApp(App[None]):
                         partial(self.run_page_action, name, binding.action),
                     )
                 )
+        # The dynamic Dashboard page lists its actions under the same naming
+        # scheme, but only once it exists (DC-030).
+        if isinstance(self._pages.get("dashboard"), DashboardPage):
+            for binding in Binding.make_bindings(list(DashboardPage.BINDINGS)):
+                title = binding.action.replace("_", " ").capitalize()
+                key = overrides.get(binding.id or "", binding.key)
+                commands.append(
+                    PaletteCommand(
+                        f"Dashboard: {title}",
+                        f"press {format_key(key)}",
+                        partial(self.run_page_action, "dashboard", binding.action),
+                    )
+                )
         return commands
+
+    def _dashboard_palette_entry(self) -> PaletteCommand | None:
+        """The "Go to Dashboard" entry, or None before any dashboard exists (DC-030).
+
+        The tab — and therefore this entry — appears with the first
+        ``open_dashboard`` and stays for the rest of the session.
+        """
+        if not isinstance(self._pages.get("dashboard"), DashboardPage):
+            return None
+        return PaletteCommand(
+            "Go to Dashboard",
+            "Show the AI-built dashboard tab",
+            partial(self.call_next, self.run_action, "goto_dashboard"),
+        )

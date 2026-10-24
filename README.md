@@ -34,6 +34,14 @@ application.
   pane's directory: total size and counts, disk usage by content category,
   top extensions, a modification calendar heatmap, a size histogram,
   permission masks, and the largest / oldest / newest files.
+- **AI dashboard builder** — a `Ctrl+6` Builder tab where you describe a
+  dashboard in natural language; an embedded `opencode` agent returns one
+  declarative dashboard specification (a fenced JSON block, with clarifying
+  questions when it needs to), and the dashboard opens in a dedicated Dashboard
+  tab rendered natively with the app's own components and theme. Dashboards
+  are saved and reloaded with `Ctrl+S` / `Ctrl+L` and refreshed with `Ctrl+R`.
+  Requires the `opencode` CLI (v2, with v1 as a fallback); without it the tab
+  shows a hint and the rest of the app is unaffected.
 - **External launches** — open files with the system handler, edit in
   `$EDITOR`, and open URLs found in files with the default browser.
 
@@ -60,13 +68,13 @@ Then run `daylight`.
 
 ### Option 2 — install from a release asset
 
-Download `daylight_commander-1.0.0-py3-none-any.whl` from the
+Download `daylight_commander-1.2.0-py3-none-any.whl` from the
 [latest release](https://github.com/sanfilippo-smeup/daylight-commander/releases/latest), then:
 
 ```bash
-uv tool install ./daylight_commander-1.0.0-py3-none-any.whl
+uv tool install ./daylight_commander-1.2.0-py3-none-any.whl
 # or
-pip install ./daylight_commander-1.0.0-py3-none-any.whl
+pip install ./daylight_commander-1.2.0-py3-none-any.whl
 ```
 
 ### Option 3 — build from a source checkout
@@ -76,7 +84,7 @@ Clone the repository, then build or install locally:
 ```bash
 git clone https://github.com/sanfilippo-smeup/daylight-commander.git
 cd daylight-commander
-uv build              # → dist/daylight_commander-1.0.0-py3-none-any.whl + .tar.gz
+uv build              # → dist/daylight_commander-1.2.0-py3-none-any.whl + .tar.gz
 uv tool install .     # install the local package as a tool
 ```
 
@@ -98,8 +106,9 @@ uv run daylight       # from a source checkout (option 4)
 The TUI opens with two directory panes. Move the cursor with the arrow keys,
 press `Ctrl+T` to switch panes, and use the F-keys below for file
 operations. Press `Ctrl+P` for the command palette; every
-page (Files `Ctrl+1`, Viewers `Ctrl+2`, Properties `Ctrl+3`, Settings
-`Ctrl+4`) is also reachable from the palette and its tab.
+page (Files `Ctrl+1`, Viewers `Ctrl+2`, Properties `Ctrl+3`, Settings `Ctrl+4`,
+Stats `Ctrl+5`, Builder `Ctrl+6`, plus the dynamic Dashboard tab) is also
+reachable from the palette and its tab.
 
 ## Keybindings
 
@@ -137,6 +146,76 @@ page (`Ctrl+4`) and persisted per user to `$XDG_CONFIG_HOME/daylight/config.json
 defaults shown above; the footer and command palette always reflect the active
 bindings.
 
+## AI dashboard builder (POC)
+
+The Builder tab (`Ctrl+6`) generates a dashboard from a plain-language
+description: you describe what you want to see, an embedded
+[`opencode`](https://opencode.ai) agent answers with a single declarative
+dashboard specification — one fenced JSON block — and the dashboard opens in a
+native Dashboard tab. It is a proof-of-concept (PRD §5.8, ADR-016).
+
+**Prerequisite.** The `opencode` CLI must be installed and on your `PATH` —
+the app starts `opencode serve` on loopback automatically when you build.
+Without it the Builder tab shows a hint and the rest of the app is unaffected.
+
+**opencode versions.** The Builder supports opencode **v2**: it authenticates
+with HTTP Basic auth using the per-process password the server prints at
+startup, calls the JSON API under `/api`, streams the incremental
+`session.text.delta` / `session.text.ended` events, and answers clarifying
+questions delivered as forms (`form.created` → form reply). Older installs
+that only speak the **v1** API are supported as a fallback: the version is
+detected from the server's startup output, and the client switches protocol
+automatically. The v2 API is experimental upstream and may drift; when it
+does, the Builder degrades gracefully instead of crashing.
+
+**Flow.**
+
+1. Press `Ctrl+6`, type a prompt into the input (for example *"Summarize the
+   CSV files in this directory as a dashboard"*), and press `Enter`.
+2. The agent may ask a clarifying question; pick one of the offered options or
+   type a free-text answer, and the build continues.
+3. The agent replies with exactly one fenced JSON block — for example:
+
+   ```json
+   {
+     "schema_version": 1,
+     "title": "My directory",
+     "blocks": [
+       { "kind": "summary_cards", "source": "summary" },
+       { "kind": "bar_chart", "source": "extension_counts", "top_n": 10 }
+     ]
+   }
+   ```
+
+   The Builder validates it and opens the Dashboard tab: one block per
+   specification entry, rendered natively from the statistics of the directory
+   you started the build in, with the app's own components and theme tokens.
+   Summary cards, bar charts, share bars, histograms, heatmap and tables are
+   real widgets — no ANSI output, HTML, SVG or generated code is ever rendered
+   or executed. If the reply carries no valid specification, the Builder says
+   exactly what was rejected and nothing is opened or run.
+
+4. `Ctrl+S` saves the specification together with its directory and the prompt;
+   `Ctrl+L` reopens a saved dashboard in the Dashboard tab; `Ctrl+R` refreshes
+   the on-screen dashboard by recomputing its bound directory.
+
+**Storage.** Saved dashboards are JSON files (name, prompt, specification,
+directory, timestamps) under `$XDG_DATA_HOME/daylight/dashboards`, falling back
+to `~/.local/share/daylight/dashboards`. Artifacts from Revision 5 carried a
+generated Python *script* instead: they stay listed and marked "(legacy)" and
+are never rendered or executed by the app.
+
+**POC limitations.** The specification is a strict allowlist: the agent
+describes the dashboard declaratively — summary cards, bar charts, share bars,
+histograms, heatmaps and tables — and every number on screen comes from the
+app's own statistics for that one directory. Anything outside the contract (an
+unknown block kind or data source, another schema version, code) is rejected
+with a precise error; no generated code is ever executed, and the dashboard is
+bound to a single directory until you refresh (`Ctrl+R`) or load again
+(`Ctrl+L`). The feature is single-user and local (no remote or multi-user
+use), and the opencode v2 API is experimental upstream, so agent replies are
+always validated, never trusted.
+
 ## How this project was made
 
 Daylight Commander was built end-to-end by a human owner working with a
@@ -165,7 +244,7 @@ The agents ran inside [OpenCode](https://opencode.ai), on Ollama-hosted models.
 **The workflow.** Each feature moved through a repeatable chain:
 
 1. The owner and Coordinator agreed a plan of bounded, testable feature cards
-   (DC-001 … DC-022) derived from a frozen PRD baseline.
+   (DC-001 … DC-032) derived from a frozen PRD baseline.
 2. The Builder implemented one card, added tests, and reported precise claims.
 3. A deterministic verifier (`triad-verify`) recorded the real gate results —
    `uv run ruff check .` and `uv run pytest -q` — as environment-derived
@@ -176,8 +255,8 @@ The agents ran inside [OpenCode](https://opencode.ai), on Ollama-hosted models.
    to the next dependency-satisfied card; on rework, the work looped back to the
    Builder.
 
-Roughly 22 cards were delivered this way (plus a handful of targeted fixes),
-with 559 passing tests and 14 UI snapshots guarded by the gates. When a card hit
+Roughly 32 cards were delivered this way (plus a handful of targeted fixes),
+with 802 passing tests and 16 UI snapshots guarded by the gates. When a card hit
 a real fork in the road — a stale baseline, a flaky performance test, an
 ambiguous acceptance criterion — work stopped and the owner decided; ordinary
 implementation disagreements were resolved by the loop. See

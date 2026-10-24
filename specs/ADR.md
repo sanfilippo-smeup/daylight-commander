@@ -301,3 +301,176 @@ authorization.
 - `textual-plotext`/`plotext`: real axes and line plots, but adds a dependency
   and does not natively cover calendar heatmaps or pie/donut shares; rejected to
   keep the project dependency-free.
+
+---
+
+## ADR-014 — AI dashboard builder: embedded opencode server + sandboxed script runner
+
+### Context
+The owner requested a POC "AI dashboard builder": the user describes a dashboard
+in natural language, the harness generates Python, runs it in a sandbox, and
+shows the result live, then saves it for reuse. The project rules are strict:
+filesystem/process access only through `managers/` (ADR-003), no new third-party
+dependency without authorization, and the app must keep working when the feature
+is unavailable.
+
+### Decision
+- **Embed opencode as a managed subprocess.** The builder starts
+  `opencode serve` on a loopback port, discovers the port from the server's
+  startup line, and drives it over its HTTP API using only the Python standard
+  library (`urllib.request`, `json`, `threading`). No new Python dependency.
+- **Session protocol.** Create a session (`POST /session`), send the user's
+  request asynchronously (`POST /session/{id}/prompt_async`), and consume the
+  server-sent event stream (`GET /event`) to stream assistant text parts. Pending
+  clarifying questions (`GET /question`) are answered with
+  `POST /question/{id}/reply`; permission requests (`GET /permission`) are
+  answered with `POST /permission/{id}/reply`.
+- **Generated-script contract.** The agent is instructed to return a single
+  self-contained Python script (standard library only, plus the already-present
+  `rich`) that reads data from its working directory and prints a text/ANSI
+  dashboard to stdout. The harness extracts the fenced code block.
+- **Sandbox.** The script runs via `subprocess` with `python -I`, a temporary
+  working directory, a wall-clock timeout, and POSIX `resource` limits (CPU,
+  address space, file size, no core dumps). stdout is streamed line-by-line to
+  the UI. This is a best-effort POC boundary, not OS-level isolation.
+- **Persistence.** Saved dashboards (name, prompt, script, timestamps) are stored
+  as JSON under the per-user data directory and can be reloaded and re-run.
+- **Graceful degradation.** If the `opencode` binary is missing or the server
+  fails to start, the builder reports an actionable message and the rest of the
+  app is unaffected.
+
+### Consequences
+- No new runtime dependency; packaging is unchanged.
+- The feature requires the `opencode` binary at runtime and is therefore
+  optional and POC-scoped.
+- The sandbox limits blast radius (time, memory, file size, no shell) but does
+  not isolate the network or the filesystem beyond a temporary working directory.
+- All process/HTTP/filesystem logic stays in `managers/`, so it is unit-testable
+  with fakes and never blocks the UI thread.
+
+### Alternatives considered
+- **`opencode run --format json` one-shot per turn**: simpler, but it cannot
+  carry a multi-turn clarifying-question conversation or stream partial output;
+  rejected.
+- **A third-party HTTP client (`httpx`/`requests`)**: ergonomic, but adds a
+  dependency; the standard library is sufficient for a loopback JSON API.
+- **A real container sandbox (Docker/`bubblewrap`)**: stronger isolation, but
+  adds an external runtime dependency and is out of scope for a POC.
+
+---
+
+## ADR-015 — Support opencode v2 (auth + `/api` + forms) with a v1 fallback
+
+### Context
+The AI dashboard builder (ADR-014) was implemented against the opencode v1 HTTP
+API (`POST /session`, `POST /session/{id}/prompt_async`, `GET /event`,
+`GET /question`, `POST /question/{id}/reply`). The owner's installed `opencode`
+is **v2.0.32**, whose server is materially different: it prints a per-process
+password, serves its JSON API under `/api` behind HTTP Basic auth, uses
+`POST /api/session/{id}/prompt` with a `{text}` body, streams
+`session.text.delta` / `session.text.ended` / `session.execution.*` events, and
+asks clarifying questions through **forms** (`form.created`,
+`POST /api/session/{id}/form/{formID}/reply` with `{"answer": {key: value}}`).
+Against v2 the v1 client gets HTTP 405 on `POST /session`.
+
+### Decision
+Make the embedded client **version-aware**:
+- `OpenCodeServer` detects the API version from the startup output: v2 prints
+  `server listening on http://…` plus `server password …`; v1 prints
+  `opencode server listening on http://…` with no password. It exposes
+  `api_version` (`"v1"`/`"v2"`) and `password` (v2 only).
+- `OpenCodeClient` takes the version and password. For v2 it uses HTTP Basic
+  auth (`opencode:<password>`), the `/api` prefix, the v2 session/prompt/form
+  endpoints, and the v2 event shapes; for v1 it keeps the existing behavior.
+- v2 `form.created` events are normalized into the existing `BuilderQuestion`
+  model (the form id, the first field's title/description/options, and the
+  session id + field key needed to reply), so the Builder page's question UI is
+  unchanged.
+- `reply_question` posts the v2 form reply (`{"answer": {field_key: value}}`)
+  or the v1 question reply (`{"answers": [[...]]}`) as appropriate.
+- The v2 event parser maps `session.text.delta`/`session.text.ended` to text
+  events and `session.execution.succeeded`/`failed` to idle/error.
+
+### Consequences
+- The POC works with both opencode v1 and v2; the owner's v2 install is the
+  primary target.
+- No new dependency: Basic auth is a standard `Authorization` header.
+- The v2 API is experimental and may drift; the parser stays tolerant and the
+  stub-server integration test is the drift-mitigation surface.
+- v1 remains supported as a fallback for older installs.
+
+### Alternatives considered
+- **Require v1**: simplest, but the owner's environment is v2 and the docs they
+  referenced are v2; rejected.
+- **Shell out to `opencode run --format json`**: works on both versions, but
+  cannot carry the multi-turn clarifying-question flow or stream partial text;
+  rejected.
+- **Use the v2 web app / SDK**: the v2 SDK is JavaScript; embedding it would add
+  a Node dependency and a second runtime; rejected for a Python POC.
+
+---
+
+## ADR-016 — Declarative dashboard specifications rendered natively in the TUI
+
+### Context
+Revision 5 implemented the AI dashboard builder as a **generated Python
+script**: the agent returned a fenced Python program, the harness ran it in a
+best-effort sandbox, and its stdout was streamed into a text Preview pane
+(ADR-014, FR-804/805/807). A live owner run exposed two problems. First, the
+agent ignored the script contract and produced an HTML/JS dashboard; the
+harness then extracted a line of prose as "Python" and executed it, yielding a
+`SyntaxError`. Second, even a functioning script would only paint ANSI text
+inside a pane: it would not use Daylight's pages, widgets, theme tokens, or
+`.tcss` styles, so it could never look or behave like the rest of the TUI.
+
+The owner changed the product intent: dashboards must be created **inside the
+Daylight TUI using the TUI standards and structure**. The owner selected a
+declarative specification rendered natively (1A), a dedicated Dashboard tab
+(2C), and replacement of the script/HTML path (3A).
+
+### Decision
+- **The agent returns a dashboard specification, not code.** The Builder
+  prompt requires a single JSON object with `schema_version: 1`, a title, and
+  an ordered list of blocks. The specification has no executable content.
+- **A strict allowlist validator is the boundary.** `managers/` parses and
+  validates the JSON: known top-level keys only, block `kind` from
+  `summary_cards` / `bar_chart` / `share_bar` / `histogram` / `heatmap` /
+  `table`, `source` from the FR-807 allowlist, `top_n` in 1–50, and a known
+  theme token. Any unknown key, kind, source, or out-of-range value is rejected
+  with a precise message; nothing is executed.
+- **Native rendering in a dedicated Dashboard tab.** A `DashboardPage` module
+  renders the blocks with the existing `SummaryCard`, `BarChart`, `ShareBar`,
+  `Histogram`, and `CalendarHeatmap` widgets and a Rich table, styled by
+  `styles/dashboard.tcss` and theme variables. The app adds one dynamic
+  **Dashboard** tab, reused for each generated or loaded dashboard.
+- **Data is bound by source, at render time.** The page asks
+  `managers.stats.build_stats` for the dashboard's directory on a worker
+  thread; block sources map deterministically onto `DirectoryStats` fields.
+- **Persistence stores the specification.** A saved dashboard holds name,
+  prompt, specification, directory, and timestamps. Revision-5 artifacts that
+  contain a `script` are loaded as legacy entries and are neither executed nor
+  rendered.
+- **The script/sandbox path is removed** from the Builder flow. The sandbox
+  manager and its model/tests are deleted once no consumer remains.
+
+### Consequences
+- No agent-authored code runs in the app process; the sandbox attack surface
+  disappears.
+- Rendering is deterministic and unit-testable, and reuses the Stats widgets and
+  theme system, so dashboards look native by construction.
+- Expressiveness is intentionally limited to the allowlisted blocks and data
+  sources. New visuals require a new block kind or source, not agent code.
+- The agent contract is versioned (`schema_version: 1`) and must travel in the
+  Builder instruction; drift is caught by validation and by the stub-server
+  integration test.
+- Legacy saved scripts remain on disk but are visibly marked legacy.
+
+### Alternatives considered
+- **Generated Textual Python module**: maximum flexibility, but it executes
+  agent-authored code in-process (the sandbox no longer applies), requires a
+  stable plugin API, and makes every generated dashboard a security review;
+  rejected.
+- **Keep the script/stdout path and style the pane**: least work, but it does
+  not use Daylight's structure and cannot satisfy the owner's intent; rejected.
+- **HTML/SVG dashboard embedded or opened externally**: leaves the TUI and adds
+  a browser dependency; rejected.

@@ -5,7 +5,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft — Revision 4 |
+| Status | Draft — Revision 6 |
 | Product | Terminal file manager (TUI) |
 | Target users | Developers / technical users |
 | Platform | Python >= 3.13, terminal (256-color / truecolor) |
@@ -180,6 +180,59 @@ and servers.
   directory changes, and via an explicit refresh action; results are cached per
   directory.
 
+### 5.8 AI dashboard builder (FR-800)
+
+> **Scope.** This section describes an owner-requested AI builder. The agent
+> produces a **declarative dashboard specification**; Daylight renders it
+> **natively inside the TUI**, using the same pages, components, theme tokens,
+> and stylesheets as the rest of the app. The builder is additive: when its
+> runtime dependency (the `opencode` binary) is absent, the rest of the app
+> behaves exactly as before.
+
+- **FR-801** — A **Builder** tab (reachable from the tab strip, the command
+  palette, and `Ctrl+6`) lets the user describe, in natural language, a dashboard
+  they want for the directory they are browsing. The tab hosts the prompt, the
+  agent conversation, clarifying questions, and the saved-dashboard list; it is
+  not where the dashboard itself is rendered.
+- **FR-802** — The request is fulfilled by an **embedded opencode server**: the
+  app starts a local `opencode serve` process and drives it over its HTTP API.
+  The agent turns the request into a **dashboard specification** (a JSON
+  document); it must not generate or execute code. When opencode is not
+  installed or cannot start, the tab shows a clear, actionable message and the
+  rest of the app is unaffected.
+- **FR-803** — The agent may ask **clarifying questions** before producing the
+  specification. The tab presents each question with its options (and free-text
+  entry where allowed) and returns the user's answers to the same agent session.
+- **FR-804** — **Specification contract.** The specification is a versioned JSON
+  object with `schema_version` (1), a non-empty `title`, and an ordered `blocks`
+  array. Each block declares a `kind` from {`summary_cards`, `bar_chart`,
+  `share_bar`, `histogram`, `heatmap`, `table`}, a `source` from the allowlist in
+  FR-807, and optional `title`, `top_n` (1–50), and `color_token` (a theme
+  token). Unknown keys, kinds, sources, or out-of-range values are rejected with
+  a precise, user-visible message. The specification contains **no executable
+  content**: no Python, JavaScript, HTML, expressions, shell commands, or file
+  paths.
+- **FR-805** — **Native rendering.** A generated dashboard opens in a dedicated
+  **Dashboard** tab and is rendered with Daylight's existing Textual components
+  (`SummaryCard`, `BarChart`, `ShareBar`, `Histogram`, `CalendarHeatmap`) and
+  theme tokens, styled by a `dashboard.tcss` like every other page. No ANSI
+  text, HTML, SVG, image, iframe, or generated code is displayed or executed.
+  `Ctrl+R` recomputes the statistics for the dashboard's directory; the page
+  uses the standard framing, hints, and theme variables.
+- **FR-806** — **Persistence.** A dashboard can be saved (name, originating
+  prompt, specification, directory, timestamps) and reloaded; opening a saved
+  dashboard renders it in the Dashboard tab. Revision-5 script artifacts remain
+  readable but are marked legacy and are neither executed nor rendered.
+- **FR-807** — **Data sources.** A block may reference only these allowlisted
+  sources, computed at render time from `managers.stats.build_stats` for the
+  dashboard's directory: `summary`, `extension_counts`, `extension_sizes`,
+  `category_sizes`, `size_buckets`, `monthly_counts`, `permission_counts`,
+  `daily_counts`, `largest_files`, and `insights`. There is no arbitrary query
+  language, SQL, network access, or path input.
+- **FR-808** — **Manager boundary.** The specification parser/validator, the
+  data binder, the statistics walk, HTTP, and persistence live in `managers/`;
+  the UI never executes agent output or reads the filesystem directly.
+
 ## 6. Screens / views
 
 | # | Screen | Purpose |
@@ -192,6 +245,8 @@ and servers.
 | 6 | **External link launcher** | Hand off a URL to the default browser |
 | 7 | **Settings** | Theme, keybindings, defaults |
 | 8 | **Stats** | Directory statistics dashboard |
+| 9 | **Builder** | AI dashboard builder: describe a dashboard, answer questions, save it; opens the native Dashboard tab |
+| 10 | **Dashboard** | Native, specification-driven dashboard for a directory (opened from the Builder, the saved list, or the palette) |
 
 ## 7. Proposed default keybindings
 
@@ -222,6 +277,7 @@ and servers.
 | `Ctrl+P` | Command palette |
 | `Ctrl+T` | Switch pane |
 | `Ctrl+5` | Stats |
+| `Ctrl+6` | Builder (AI dashboard builder, POC) |
 | `Ctrl+Q` | Quit |
 
 > All bindings are configurable via `config`. The footer shows the
@@ -248,6 +304,17 @@ and servers.
 - Hex/binary editor.
 - Built-in archive browsing (may open externally).
 - Plugin system.
+
+### 9.1 Out of scope for the AI dashboard builder (FR-800)
+
+- Generated code execution (Python/JavaScript/HTML), arbitrary expressions,
+  shell commands, or loading agent-authored modules into the app.
+- Arbitrary data sources, SQL, network queries, or file paths outside the
+  dashboard directory.
+- External chart libraries, image/SVG/HTML rendering, or browser embedding.
+- Multi-user, remote, or shared dashboard execution.
+- Guaranteeing the aesthetic quality of a specification; the user reviews the
+  rendered dashboard and can regenerate it.
 
 ## 10. Success metrics
 
