@@ -34,6 +34,11 @@ application.
   pane's directory: total size and counts, disk usage by content category,
   top extensions, a modification calendar heatmap, a size histogram,
   permission masks, and the largest / oldest / newest files.
+- **File types tab** — a `Ctrl+7` tab that ranks the active pane's whole tree
+  by extension: file / type / scan-time summary cards plus a top-20 bar chart,
+  with extensionless files folded into a `(none)` row. It reuses the Stats
+  worker scan and its 200k-entry safety cap, caches per directory, follows the
+  active pane while visible, and refreshes with `Ctrl+R`.
 - **AI dashboard builder** — a `Ctrl+6` Builder tab where you describe a
   dashboard in natural language; an embedded `opencode` agent returns one
   declarative dashboard specification (a fenced JSON block, with clarifying
@@ -107,8 +112,8 @@ The TUI opens with two directory panes. Move the cursor with the arrow keys,
 press `Ctrl+T` to switch panes, and use the F-keys below for file
 operations. Press `Ctrl+P` for the command palette; every
 page (Files `Ctrl+1`, Viewers `Ctrl+2`, Properties `Ctrl+3`, Settings `Ctrl+4`,
-Stats `Ctrl+5`, Builder `Ctrl+6`, plus the dynamic Dashboard tab) is also
-reachable from the palette and its tab.
+Stats `Ctrl+5`, Builder `Ctrl+6`, File types `Ctrl+7`, plus the dynamic
+Dashboard tab) is also reachable from the palette and its tab.
 
 ## Keybindings
 

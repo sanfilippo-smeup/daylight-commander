@@ -34,6 +34,7 @@ from daylight.components.command_palette import DaylightCommandProvider, Palette
 from daylight.components.modules.builder_page import BuilderPage
 from daylight.components.modules.dashboard_page import DashboardPage
 from daylight.components.modules.file_list import FilesPage, LocationChanged
+from daylight.components.modules.filetypes_page import FileTypesPage
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.settings_page import SettingsPage
 from daylight.components.modules.stats_page import StatsPage
@@ -53,6 +54,7 @@ PAGE_LABELS: dict[str, str] = {
     "settings": "Settings",
     "stats": "Stats",
     "builder": "Builder",
+    "filetypes": "File types",
 }
 
 #: The page the app starts on.
@@ -86,6 +88,7 @@ class DaylightApp(App[None]):
         "styles/stats.tcss",
         "styles/builder.tcss",
         "styles/dashboard.tcss",
+        "styles/filetypes.tcss",
     ]
     BINDINGS = [
         # The only two app-wide hints the footer has room for; the tab keys are
@@ -137,6 +140,13 @@ class DaylightApp(App[None]):
             show=False,
             id="goto_builder",
         ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_filetypes"],
+            "goto_filetypes",
+            "File types",
+            show=False,
+            id="goto_filetypes",
+        ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
     COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
@@ -151,6 +161,7 @@ class DaylightApp(App[None]):
         "settings": SettingsPage,
         "stats": StatsPage,
         "builder": BuilderPage,
+        "filetypes": FileTypesPage,
         "dashboard": DashboardPage,
     }
 
@@ -162,6 +173,7 @@ class DaylightApp(App[None]):
         ("Go to Settings", "goto_settings", "Theme and keybindings"),
         ("Go to Stats", "goto_stats", "Directory statistics for the active pane"),
         ("Go to Builder", "goto_builder", "Build a dashboard with AI"),
+        ("Go to File types", "goto_filetypes", "Files by extension for the active pane"),
         ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
     )
 
@@ -383,6 +395,11 @@ class DaylightApp(App[None]):
             # already got (DC-023, AC6); the page is focusable so ctrl+r works.
             page.refresh_stats()
             page.focus()
+        elif isinstance(page, FileTypesPage):
+            # Same contract as the Stats tab: cached directories render at once,
+            # and the page takes focus so ctrl+r reaches its binding.
+            page.refresh_filetypes()
+            page.focus()
         elif isinstance(page, BuilderPage):
             # The keyboard goes straight to the prompt, so the user can type
             # the moment the tab opens (DC-025); its ctrl+s/l/r keys bubble
@@ -412,6 +429,11 @@ class DaylightApp(App[None]):
             stats = self._pages.get("stats")
             if isinstance(stats, StatsPage):
                 stats.refresh_stats()
+        # The File types tab follows the path the same way (DC-034).
+        if self.active_page == "filetypes":
+            filetypes = self._pages.get("filetypes")
+            if isinstance(filetypes, FileTypesPage):
+                filetypes.refresh_filetypes()
 
     def update_path(self) -> None:
         """Show the directory being browsed in the header."""
@@ -446,6 +468,10 @@ class DaylightApp(App[None]):
     def action_goto_builder(self) -> None:
         """``ctrl+6``: show the Builder page (DC-025)."""
         self.show_page("builder")
+
+    def action_goto_filetypes(self) -> None:
+        """``ctrl+7``: show the File types page (DC-034)."""
+        self.show_page("filetypes")
 
     def action_goto_dashboard(self) -> None:
         """Palette: show the Dashboard tab (DC-030); offered once a dashboard exists."""
