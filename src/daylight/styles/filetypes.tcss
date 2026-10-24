@@ -1,0 +1,39 @@
+/* Standalone file-type dashboard: summary cards and one bar chart.
+   Colors arrive as $name variables from daylight.themes.get_css_variables(). */
+
+Screen {
+    background: $background;
+    color: $foreground;
+}
+
+#filetypes-title {
+    height: 1;
+    color: $accent;
+    background: $surface;
+    padding: 0 1;
+    text-style: bold;
+}
+
+.stats-summary {
+    height: auto;
+}
+
+.summary-card {
+    width: 1fr;
+    height: 5;
+    background: $panel;
+    border: round $accent;
+    padding: 0 1;
+}
+
+#filetypes-scroll {
+    height: 1fr;
+}
+
+.chart {
+    width: 1fr;
+    height: auto;
+    background: $panel;
+    border: round $accent;
+    padding: 0 1;
+}
