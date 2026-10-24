@@ -4,14 +4,17 @@ Every byte this application reads on behalf of the viewer is read here (AC2-AC4,
 FR-301..FR-305), which is what keeps the rule that the UI never touches the disk
 true even for a viewer that has to *stream* a file.
 
-Two things are deliberately bounded:
+One bound applies to every inline view:
 
-* :data:`PRETTY_LIMIT` is the largest document the pretty formatters will read
-  whole. A ``.json``/``.md`` file above it is reported truncated and the viewer
-  falls back to a windowed raw view.
-* the plain-text path never materialises the file at all: :func:`read_window`
-  seeks a line range and :func:`count_lines` streams the file counting newlines,
-  so a 2 GB log costs the event loop one screenful of lines.
+* :data:`VIEW_LIMIT` (1 MiB) is the largest document the viewer reads whole.
+  Above it the file is reported truncated and the first 1 MiB is shown, so the
+  viewer never materialises a multi-gigabyte log just to scroll it.
+
+The streaming helpers (:func:`read_window`, :func:`count_lines`,
+:func:`find_matches`) remain part of the manager API and are the right answer for
+callers that must not read a whole file -- URL detection uses :func:`read_window`
+-- but the viewer itself now mounts one bounded document and scrolls it natively,
+exactly as it does for Markdown.
 """
 
 from __future__ import annotations
@@ -33,8 +36,9 @@ __all__ = [
     "CHECKSUM_ALGORITHM",
     "CHECKSUM_CHUNK",
     "LINE_COUNT_LIMIT",
-    "PRETTY_LIMIT",
     "SNIFF_BYTES",
+    "VIEW_LIMIT",
+    "VIEW_LINE_LIMIT",
     "checksum",
     "count_lines",
     "describe",
@@ -53,8 +57,21 @@ __all__ = [
 #: file, so opening a 4 GB movie costs 8 KiB.
 SNIFF_BYTES = 8192
 
-#: Largest document the JSON/Markdown formatters read whole (1 MiB).
-PRETTY_LIMIT = 1_048_576
+#: Largest document the viewer reads whole, for every inline kind (1 MiB).
+#:
+#: Bounds *bytes*, not characters, so the work is the same whatever the encoding.
+#: One limit rather than one per format: Markdown, JSON, YAML and source text
+#: all render into the same scrollable body, so they all degrade the same way.
+VIEW_LIMIT = 1_048_576
+
+#: Most lines the viewer will mount, whatever the byte size.
+#:
+#: A megabyte of very short lines is ~95,000 lines, and a Textual `Static` that
+#: tall costs seconds to lay out and repaint. Ten thousand lines keeps the worst
+#: case under a second while still covering a large source file; anything longer
+#: shows its first :data:`VIEW_LINE_LIMIT` lines with a notice, and a double
+#: ``enter`` can always hand the whole file to the OS viewer.
+VIEW_LINE_LIMIT = 10_000
 
 #: Largest file whose line count is pre-computed (64 MiB).
 #:
@@ -216,20 +233,27 @@ def checksum(
 # -- reading (all of it bounded) --------------------------------------------
 
 
-def read_text(path: str | os.PathLike[str], *, limit: int = PRETTY_LIMIT) -> tuple[str, bool]:
-    """Return ``(text, truncated)`` for the first ``limit`` characters of ``path``.
+def read_text(path: str | os.PathLike[str], *, limit: int | None = None) -> tuple[str, bool]:
+    """Return ``(text, truncated)`` for the first ``limit`` **bytes** of ``path``.
 
-    At most ``limit + 1`` characters are read, so asking for the head of a huge
-    file does not read the whole file. A truncated read is cut back to the last
-    complete line, because half a line is not worth showing.
+    At most ``limit + 1`` bytes are read, so asking for the head of a huge file
+    does not read the whole file, and the bound means the same amount of work
+    whatever the encoding. A truncated read is cut back to the last complete
+    line, because half a line is not worth showing. ``limit`` defaults to
+    :data:`VIEW_LIMIT` at call time, so the bound can be tuned in tests.
     """
+    ceiling = VIEW_LIMIT if limit is None else limit
     target = _target(path)
-    with target.open("r", encoding=_encoding_for(target), errors="replace") as handle:
-        text = handle.read(limit + 1)
-    if len(text) <= limit:
-        return text, False
-    cut = text.rfind("\n", 0, limit)
-    return (text[: cut + 1] if cut > 0 else text[:limit]), True
+    with target.open("rb") as handle:
+        data = handle.read(ceiling + 1)
+    truncated = len(data) > ceiling
+    if truncated:
+        data = data[:ceiling]
+    text = data.decode(_encoding_for(target), errors="replace")
+    if truncated:
+        cut = text.rfind("\n")
+        text = text[: cut + 1] if cut > 0 else text
+    return text, truncated
 
 
 def read_window(
@@ -324,18 +348,34 @@ def _format_json(text: str) -> tuple[str, str]:
     return json.dumps(loaded, indent=2, ensure_ascii=False, sort_keys=False), ""
 
 
+def _cap_lines(text: str, limit: int) -> tuple[str, bool]:
+    """Return ``(text, capped)`` keeping at most ``limit`` newline-delimited lines.
+
+    Only ``\\n`` ends a line: form feeds and the other Unicode line separators
+    stay inside a line, so the gutter numbers match the file's real lines.
+    """
+    if limit <= 0:
+        return "", bool(text)
+    lines = text.split("\n")
+    count = len(lines) - (1 if text.endswith("\n") else 0)
+    if count <= limit:
+        return text, False
+    return "\n".join(lines[:limit]), True
+
+
 def load_view(
     path: str | os.PathLike[str],
     *,
-    limit: int = PRETTY_LIMIT,
+    limit: int | None = None,
 ) -> ViewDocument:
     """Return what the internal viewer should draw for ``path`` (AC2, AC3).
 
-    ``markdown``/``json`` come back formatted; ``text`` -- YAML included -- comes
-    back with an empty body because that viewer asks the manager for one window of
-    lines at a time; ``binary`` comes back with no body at all, since a binary
-    file is never rendered inline (AC4).
+    Every text kind -- ``markdown``, ``json`` and plain text, YAML included --
+    comes back with its whole document, bounded by ``limit`` bytes (default
+    :data:`VIEW_LIMIT`) and by :data:`VIEW_LINE_LIMIT` lines. ``binary`` comes
+    back with no body at all, since a binary file is never rendered inline (AC4).
     """
+    ceiling = VIEW_LIMIT if limit is None else limit
     target = _target(path)
     try:
         size = target.stat().st_size
@@ -344,20 +384,39 @@ def load_view(
     kind = view_kind(target)
     if kind in ("binary", "directory"):
         return ViewDocument(kind=kind, size=size)
-    if kind == "text":
-        # The windowed viewer never needs the whole file, so hand it no body at
-        # all: it asks for one window of lines at a time instead.
-        return ViewDocument(kind=kind, size=size)
-    text, truncated = read_text(target, limit=limit)
-    notice = ""
+    text, truncated = read_text(target, limit=ceiling)
+    notices: list[str] = []
     if kind == "json" and not truncated:
         text, notice = _format_json(text)
-    elif truncated:
-        notice = (
-            f"file is larger than {limit // 1024} KiB: "
-            f"showing the first {limit // 1024} KiB"
+        if notice:
+            notices.append(notice)
+    text, capped = _cap_lines(text, VIEW_LINE_LIMIT)
+    if truncated and capped:
+        # A file can exceed both bounds at once -- a megabyte of 2-byte lines
+        # does -- and then the line cap shrinks the mount to far fewer bytes
+        # than ``ceiling``, so the notice must state the lines actually shown
+        # instead of implying that a whole mebibyte is on screen.
+        notices.append(
+            f"file is larger than {ceiling // 1024} KiB and has more than "
+            f"{VIEW_LINE_LIMIT} lines: showing the first {VIEW_LINE_LIMIT} lines"
         )
-    return ViewDocument(kind=kind, text=text, notice=notice, truncated=truncated, size=size)
+    elif truncated:
+        notices.append(
+            f"file is larger than {ceiling // 1024} KiB: "
+            f"showing the first {ceiling // 1024} KiB"
+        )
+    if capped and not truncated:
+        notices.append(
+            f"document has more than {VIEW_LINE_LIMIT} lines: "
+            f"showing the first {VIEW_LINE_LIMIT} lines"
+        )
+    return ViewDocument(
+        kind=kind,
+        text=text,
+        notice="; ".join(notices),
+        truncated=truncated or capped,
+        size=size,
+    )
 
 
 # -- properties -------------------------------------------------------------

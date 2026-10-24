@@ -60,6 +60,7 @@ from daylight.modals import ConfirmScreen, FormScreen, LaunchScreen, ProgressScr
 from daylight.modals.progress import Operation
 
 __all__ = [
+    "DOUBLE_ENTER_TIMEOUT",
     "PANEL_NAMES",
     "SCROLL_STEP",
     "SCROLLBAR_RESERVE",
@@ -97,8 +98,24 @@ CURSOR_ACTIONS: frozenset[str] = frozenset(
     {"cursor_up", "cursor_down", "page_up", "page_down", "scroll_home", "scroll_end"}
 )
 
+#: The Files-page actions that only make sense while a viewer is mounted.
+#:
+#: They are ``priority`` (so they win over the listing's horizontal page keys),
+#: which would otherwise consume ``ctrl+pageup``/``ctrl+pagedown`` even with no
+#: viewer open. Reporting them disabled lets those keys fall through to the
+#: focused table again.
+VIEWER_ACTIONS: frozenset[str] = frozenset(
+    {"viewer_up", "viewer_down", "viewer_page_up", "viewer_page_down"}
+)
+
 #: Seconds of inactivity after which the type-ahead prefix is forgotten.
 TYPEAHEAD_TIMEOUT = 1.0
+
+#: How close two ``enter`` presses on the same file must be to count as a double
+#: enter (which hands the file to the OS default viewer). Half a second is the
+#: usual desktop double-click window; a slower second enter just re-opens the
+#: internal viewer.
+DOUBLE_ENTER_TIMEOUT = 0.5
 
 
 class TypeAhead:
@@ -208,6 +225,10 @@ class FilePanel(Vertical):
         self.window_stop = 0
         #: Accumulated type-ahead prefix (FR-109); reset on navigation and idle.
         self._typeahead = TypeAhead()
+        #: The last ``(path, timestamp)`` an ``enter`` opened a file for, so the
+        #: same file entered again within :data:`DOUBLE_ENTER_TIMEOUT` can be
+        #: handed to the OS viewer instead.
+        self._last_enter: tuple[Path, float] | None = None
         # The child widgets are built here rather than in ``compose`` so the
         # panel can hand out stable references before it is mounted.
         self._breadcrumb = Static("", id=f"breadcrumb-{name}", classes="breadcrumb")
@@ -289,6 +310,10 @@ class FilePanel(Vertical):
         if self.is_mounted:
             self._tabs.hide_tab(self._viewer_pane.id or "")
 
+    def cancel_double_enter(self) -> None:
+        """Forget a pending double-enter gesture; the next enter starts over."""
+        self._last_enter = None
+
     def _empty_mount(self) -> None:
         """Empty the mount point without touching the tabsheet.
 
@@ -301,11 +326,22 @@ class FilePanel(Vertical):
         self._mount_point.remove_class("visible")
 
     def previous_tab(self) -> None:
-        """Move this panel's tabsheet one tab back (keyboard switching, DC-010)."""
+        """Move this panel's tabsheet one tab back (keyboard switching, DC-010).
+
+        The switch can leave the Viewer tab, hiding the viewer: then the
+        pending double-enter gesture armed on the listing dies with it (AC5),
+        and the next ``enter`` may only re-open the viewer, never launch.
+        """
+        self.cancel_double_enter()
         self._tabs.query_one(Tabs).action_previous_tab()
 
     def next_tab(self) -> None:
-        """Move this panel's tabsheet one tab forward (keyboard switching, DC-010)."""
+        """Move this panel's tabsheet one tab forward (keyboard switching, DC-010).
+
+        Same reason as :meth:`previous_tab`: the switch may hide the viewer,
+        so the pending double-enter gesture dies with it (AC5).
+        """
+        self.cancel_double_enter()
         self._tabs.query_one(Tabs).action_next_tab()
 
     @property
@@ -417,20 +453,29 @@ class FilePanel(Vertical):
         focused = self.app.focused
         return isinstance(focused, DataTable) and isinstance(focused.parent, PropertiesView)
 
+    def viewer_body_focused(self) -> bool:
+        """True while this panel's viewer body owns the keyboard (Tab in the pane)."""
+        viewer = self.mounted_viewer
+        return isinstance(viewer, ViewerPanel) and self.app.focused is viewer.body
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
-        """Hand the cursor keys back to the focused properties table (AC6).
+        """Hand the cursor keys back to a focused child that scrolls itself.
 
         The six cursor bindings above are ``priority``, and the framework resolves
         those from the app down *before* the focused widget's own bindings -- in
         either panel, since a binding is not scoped to the pane it sits in. That
         is what keeps the virtual listing cursor ahead of the panel's DataTable,
         but it would also swallow ``up``/``down``/``pageup``/``pagedown``/``home``/
-        ``end`` while the *properties* table is the focused widget, leaving only
-        its first field reachable by keyboard. Reporting these actions as disabled
-        lets the key fall through to the table, which binds the same six keys.
+        ``end`` while a child that scrolls itself is focused: the *properties*
+        table (AC6) or the viewer body after Tab. Reporting these actions as
+        disabled lets the key fall through to that child, which binds the same
+        keys, so arrow/page keys scroll the file exactly as they do in the
+        full-page Viewers tab.
         """
         del parameters
-        if action in CURSOR_ACTIONS and self.properties_table_focused():
+        if action in CURSOR_ACTIONS and (
+            self.properties_table_focused() or self.viewer_body_focused()
+        ):
             return False
         return True
 
@@ -577,6 +622,10 @@ class FilePanel(Vertical):
 
     def apply_entries(self, visible: list[DirEntry]) -> None:
         """Install an ordered listing and show it from the top."""
+        # A re-filter, a re-sort or a re-scan rebuilds the listing from the
+        # top, so the row a pending double-enter was armed on is no longer
+        # the cursor row: the gesture must not launch anything (AC5).
+        self.cancel_double_enter()
         self.visible_entries = visible
         # A re-filter or a re-sort must not keep marks pointing at rows the
         # user can no longer see, or a batch op would act on a stale path.
@@ -625,6 +674,9 @@ class FilePanel(Vertical):
 
     def move_cursor(self, index: int) -> None:
         """Put the cursor on listing row ``index``, scrolling the window to it."""
+        # Moving the cursor ends a double-enter gesture: the second enter must be
+        # on the same, unchanged row.
+        self.cancel_double_enter()
         start, stop = self.window_start, self.window_stop
         viewport = self.viewport_rows
         offset = self.view_offset
@@ -636,6 +688,11 @@ class FilePanel(Vertical):
 
     def scroll_view(self, delta: int) -> None:
         """Move the virtual viewport by ``delta`` rows, dragging the cursor along."""
+        # Wheel scrolling can drag the cursor, so it ends a double-enter
+        # gesture (AC5); the guard keeps the hot wheel path O(1) when no
+        # gesture is pending.
+        if self._last_enter is not None:
+            self.cancel_double_enter()
         offset = self.view_offset + delta
         cursor = min(max(self.cursor_index, offset), offset + self.viewport_rows - 1)
         self.show_range(offset, cursor)
@@ -702,6 +759,9 @@ class FilePanel(Vertical):
         keeps whatever filter it was showing.
         """
         self.directory = Path(path)
+        # A pending double-enter belongs to the previous directory: the new
+        # listing starts on another row, so nothing may launch here (AC5).
+        self.cancel_double_enter()
         # Marks belong to the directory they were made in.
         self._selected.clear()
         # So does the filter.
@@ -1039,7 +1099,12 @@ class FilePanel(Vertical):
 
     @on(DataTable.RowSelected, "DataTable")
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        """``enter`` on a row: a directory (or ``..``) is entered, a file is viewed.
+        """``enter`` on a row: a directory is entered, a file is viewed.
+
+        A second ``enter`` on the same file within
+        :data:`DOUBLE_ENTER_TIMEOUT` hands it to the OS default viewer -- the
+        same confirmed launch a non-text file gets from ``f3`` -- so a huge or
+        awkward file is one gesture away from its native application.
 
         The selector is the widget type, not ``#table-*``: an id selector in
         Textual is an exact match, and the handler already only ever sees the
@@ -1050,9 +1115,21 @@ class FilePanel(Vertical):
         if entry is None:
             return
         if entry.is_dir:
+            self.cancel_double_enter()
             self.enter_selected()
-        else:
-            self.page.open_view()
+            return
+        now = monotonic()
+        previous = self._last_enter
+        if (
+            previous is not None
+            and previous[0] == entry.path
+            and now - previous[1] <= DOUBLE_ENTER_TIMEOUT
+        ):
+            self.cancel_double_enter()
+            self.page.open_external()
+            return
+        self._last_enter = (entry.path, now)
+        self.page.open_view()
 
 
 class FilesPage(Vertical):
@@ -1084,21 +1161,34 @@ class FilesPage(Vertical):
         Binding("f8", "delete", "Delete", show=True, id="delete"),
         Binding("shift+f8", "delete_permanent", "Wipe", show=False, id="delete_permanent"),
         # Viewing keys stay palette-only; the viewer header repeats them while
-        # one is open.
+        # one is open. They are ``priority`` for the same reason the panel's
+        # cursor keys are: the focused DataTable inherits ScrollableContainer's
+        # ``ctrl+pageup``/``ctrl+pagedown`` (horizontal table scroll), which would
+        # otherwise swallow the viewer's page keys before FilesPage sees them.
         Binding("f3", "view", "View", show=False, id="view"),
         Binding("alt+enter", "properties", "Info", show=False, id="properties"),
         Binding("f4", "edit", "Edit", show=False, id="edit"),
         Binding("ctrl+c", "copy_property", "Copy field", show=False, id="copy_property"),
         Binding("ctrl+g", "next_match", "Next match", show=False, id="next_match"),
         Binding("ctrl+f", "search_viewer", "Find", show=False, id="search_viewer"),
-        Binding("ctrl+up", "viewer_up", "Viewer up", show=False, id="viewer_up"),
-        Binding("ctrl+down", "viewer_down", "Viewer down", show=False, id="viewer_down"),
-        Binding("ctrl+pageup", "viewer_page_up", "Viewer page up", show=False, id="viewer_page_up"),
+        Binding("ctrl+up", "viewer_up", "Viewer up", show=False, priority=True, id="viewer_up"),
+        Binding(
+            "ctrl+down", "viewer_down", "Viewer down", show=False, priority=True, id="viewer_down"
+        ),
+        Binding(
+            "ctrl+pageup",
+            "viewer_page_up",
+            "Viewer page up",
+            show=False,
+            priority=True,
+            id="viewer_page_up",
+        ),
         Binding(
             "ctrl+pagedown",
             "viewer_page_down",
             "Viewer page down",
             show=False,
+            priority=True,
             id="viewer_page_down",
         ),
         Binding("escape", "close_viewer", "Close viewer", show=False, id="close_viewer"),
@@ -1127,6 +1217,19 @@ class FilesPage(Vertical):
         #: flight; the one ``Input.Changed`` it produces must not re-derive.
         self._suppress_filter_change = False
         super().__init__(id="files-page")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
+        """Keep the viewer keys from eating the listing's keys when nothing is open.
+
+        The four viewer bindings are ``priority`` so the focused ``DataTable``
+        cannot shadow them (see ``BINDINGS``). With no viewer mounted there is
+        nothing to scroll, and consuming the key would break the table's own
+        ``ctrl+pageup``/``ctrl+pagedown`` horizontal paging.
+        """
+        del parameters
+        if action in VIEWER_ACTIONS and self.viewer is None:
+            return False
+        return True
 
     # -- queries -----------------------------------------------------------
 
@@ -1211,6 +1314,11 @@ class FilesPage(Vertical):
         if name not in PANEL_NAMES:
             raise ValueError(f"unknown panel: {name!r}")
         if name != self.active_panel:
+            # The ``enter`` target follows the active panel, so switching
+            # panes breaks the "second enter on the same file" premise: drop
+            # the pending gesture in both panels so nothing can launch (AC5).
+            for panel in self.panels:
+                panel.cancel_double_enter()
             self.active_panel = name
         else:
             self.sync_active()
@@ -1395,11 +1503,39 @@ class FilesPage(Vertical):
         target.mount_viewer(ViewerPanel(entry.path, manager=self.manager, kind=kind))
         return entry.path
 
-    def open_properties(self) -> Path | None:
-        """Show the detail/properties view for the entry under the cursor (AC6)."""
+    def open_external(self) -> Path | None:
+        """Hand the entry under the cursor to the OS default application.
+
+        Reached by a double ``enter`` on a file, including a plain-text one that
+        the single ``enter`` already opened in the internal viewer. It is the
+        same confirmed launch as ``f3`` on a binary file (DC-006/FR-403), so
+        nothing opens without naming the target and the application first.
+        """
         entry = self.target_entry()
         if entry is None:
             return None
+        if entry.is_dir:
+            self.notify("browse a directory, or put the cursor on a file", severity="warning")
+            return None
+        self.prompt_launch(self.manager.describe_open(entry.path))
+        return entry.path
+
+    def open_properties(self) -> Path | None:
+        """Show the detail/properties view for the entry under the cursor (AC6).
+
+        The properties table replaces the mounted viewer, so it ends the
+        pending double-enter gesture too (AC5): the view the gesture was armed
+        against is gone, and a fast second ``enter`` after ``alt+enter`` must
+        only re-open the internal viewer, never launch anything.
+        """
+        entry = self.target_entry()
+        if entry is None:
+            return None
+        # The armed gesture can live in either panel -- the properties view
+        # replaces the inactive pane's viewer and empties the other panes -- so
+        # drop it in every panel, like ``clear_viewers`` does.
+        for panel in self.panels:
+            panel.cancel_double_enter()
         target = self.inactive
         self._clear_other_viewers(target)
         self._view_target = entry.path
@@ -1409,6 +1545,7 @@ class FilesPage(Vertical):
     def clear_viewers(self) -> None:
         """Empty every mount point and forget the view target."""
         for panel in self.panels:
+            panel.cancel_double_enter()
             panel.clear_viewer()
         self._view_target = None
 
@@ -1481,8 +1618,9 @@ class FilesPage(Vertical):
 
         The launch is wired into the answer callback and nowhere else, so a
         declined dialog cannot have opened anything -- that is the property the
-        card's risk is about, and it is why nothing in this page calls
-        ``open_external`` or ``open_link`` directly.
+        card's risk is about, and it is why a path reaches the OS only through
+        this confirmation, whether it came from ``f3`` on a binary file or a
+        double ``enter`` on any file.
         """
         self.app.push_screen(
             LaunchScreen(request),
@@ -1546,23 +1684,16 @@ class FilesPage(Vertical):
     def _scroll_viewer(self, lines: int, pages: int = 0) -> None:
         """Move the viewer by ``lines`` lines or ``pages`` screenfuls.
 
-        A rendered Markdown body scrolls itself; every other kind scrolls the
-        viewer's own window, so a file of any size moves without being read.
+        Every inline kind -- Markdown included -- scrolls its body natively, so
+        there is one code path whether the body holds rendered Markdown or a
+        numbered document.
         """
         viewer = self.viewer
         if viewer is None:
             return
         if pages:
             lines = pages * viewer.window_rows
-        if not viewer.is_rendered:
-            viewer.scroll_lines(lines)
-            return
-        body = viewer.body
-        for _ in range(abs(lines)):
-            if lines > 0:
-                body.scroll_down(animate=False)
-            else:
-                body.scroll_up(animate=False)
+        viewer.scroll_lines(lines)
 
     def action_view(self) -> None:
         """``f3``: open the internal viewer in the inactive panel."""
@@ -1606,13 +1737,27 @@ class FilesPage(Vertical):
         return self.panel(name) if name else self.inactive
 
     def action_previous_tab(self) -> None:
-        """``ctrl+left``: move the viewer pane's tabsheet one tab back (DC-010, AC6)."""
+        """``ctrl+left``: move the viewer pane's tabsheet one tab back (DC-010, AC6).
+
+        The gesture is armed on the panel the ``enter`` happened in, while the
+        tabsheet it hides the viewer with moves in the viewer's own pane, so
+        the page drops the pending double-enter gesture in *both* panels (AC5)
+        before switching: a fast second enter must only re-open the viewer.
+        """
         if not self._filter_has_focus():
+            for panel in self.panels:
+                panel.cancel_double_enter()
             self.tab_panel().previous_tab()
 
     def action_next_tab(self) -> None:
-        """``ctrl+right``: move the viewer pane's tabsheet one tab forward (DC-010, AC6)."""
+        """``ctrl+right``: move the viewer pane's tabsheet one tab forward (DC-010, AC6).
+
+        Same reason as :meth:`action_previous_tab`: switching tabs can hide the
+        viewer, so every pending double-enter gesture is dropped first (AC5).
+        """
         if not self._filter_has_focus():
+            for panel in self.panels:
+                panel.cancel_double_enter()
             self.tab_panel().next_tab()
 
     def action_search_viewer(self) -> None:

@@ -22,7 +22,9 @@ application.
 - **File operations** — copy, move, rename, delete to trash, permanent wipe,
   new file, and new directory, all with confirmation dialogs.
 - **Format-aware viewer** — inspect files in a viewer with pretty-printed
-  JSON, line counts, and a find function; keep two viewer tabs open at once.
+  JSON, line counts, and a find function; long files scroll natively (mouse
+  wheel, scrollbar, or the viewer keys) up to a 1 MiB / 10,000-line inline
+  limit, and a double `Enter` hands the file to the OS default application.
 - **Sortable columns** — cycle sort keys and reverse the order on demand.
 - **Command palette** — every action is reachable from the palette; the
   palette and the key footer are generated from the same binding table, so
@@ -130,6 +132,9 @@ Dashboard tab) is also reachable from the palette and its tab.
 | `Shift+F8` | Wipe (delete permanently) |
 | `F9` | Open link externally (URL under the cursor, with confirmation) |
 | `Alt+Enter` | File properties |
+| `Enter` twice | Open the file in the OS default application (with confirmation) |
+| `Ctrl+↑` / `Ctrl+↓` | Scroll the viewer one line |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Scroll the viewer one screen |
 | `Ctrl+S` | Cycle sort column |
 | `Ctrl+R` | Reverse sort order |
 | `Ctrl+C` | Copy field (properties page) |
@@ -141,7 +146,9 @@ Dashboard tab) is also reachable from the palette and its tab.
 Navigation extras: arrows move the cursor, `Backspace` highlights the `..`
 parent row (press `Enter` to ascend),
 `/` starts a filter, `Space` selects, `Ctrl+A` selects all, and `Escape`
-closes the viewer.
+closes the viewer. The viewer scroll keys above belong to the Files page; on
+the full-page Viewers tab (`Ctrl+2`) the body scrolls with the usual wheel, or
+with arrows/`PageDown` after `Tab` focuses it.
 
 ## Configuration
 

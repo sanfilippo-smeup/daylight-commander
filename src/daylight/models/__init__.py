@@ -103,14 +103,14 @@ class DirEntry:
 class ViewDocument:
     """What the internal viewer should draw for one file (DC-004).
 
-        Produced only by :mod:`daylight.managers.content`, so the viewer widget never
-        decides *how* a format is read: it only renders :attr:`kind` and shows
-        :attr:`notice` when the content had to be degraded.
+    Produced only by :mod:`daylight.managers.content`, so the viewer widget never
+    decides *how* a format is read: it only renders :attr:`kind` and shows
+    :attr:`notice` when the content had to be degraded.
 
-    For ``markdown``/``json`` :attr:`text` is the formatted document and
-        is bounded by ``PRETTY_LIMIT``; :attr:`truncated` then says so. For ``text``
-        (YAML included) the widget asks the manager for a window of lines instead,
-        because a source file must never be materialised whole.
+    For ``markdown``/``json``/``text`` :attr:`text` is the (formatted) document
+    and is bounded by ``VIEW_LIMIT``; :attr:`truncated` then says the file was
+    cut at that limit. The whole bounded document is mounted in the viewer's
+    scrollable body, so every inline kind scrolls the same way.
     """
 
     kind: str
@@ -121,7 +121,7 @@ class ViewDocument:
 
     @property
     def is_text_kind(self) -> bool:
-        """True for the windowed plain/source viewer."""
+        """True for the numbered plain/source viewer (YAML included)."""
         return self.kind == "text"
 
 

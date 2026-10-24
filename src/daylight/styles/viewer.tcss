@@ -45,6 +45,10 @@
     height: auto;
     padding: 0 1;
     background: $panel;
+    /* Source lines are numbered, so they must never wrap: wrapping both breaks
+       the gutter alignment and doubles the document's line count. */
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 .viewer-markdown {

@@ -214,7 +214,7 @@ class FileManager:
         self,
         path: str | os.PathLike[str],
         *,
-        limit: int = content.PRETTY_LIMIT,
+        limit: int | None = None,
     ) -> ViewDocument:
         """Return the :class:`~daylight.models.ViewDocument` for ``path``.
 
