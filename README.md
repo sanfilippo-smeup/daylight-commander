@@ -68,13 +68,13 @@ Then run `daylight`.
 
 ### Option 2 — install from a release asset
 
-Download `daylight_commander-1.0.0-py3-none-any.whl` from the
+Download `daylight_commander-1.2.0-py3-none-any.whl` from the
 [latest release](https://github.com/sanfilippo-smeup/daylight-commander/releases/latest), then:
 
 ```bash
-uv tool install ./daylight_commander-1.0.0-py3-none-any.whl
+uv tool install ./daylight_commander-1.2.0-py3-none-any.whl
 # or
-pip install ./daylight_commander-1.0.0-py3-none-any.whl
+pip install ./daylight_commander-1.2.0-py3-none-any.whl
 ```
 
 ### Option 3 — build from a source checkout
@@ -84,7 +84,7 @@ Clone the repository, then build or install locally:
 ```bash
 git clone https://github.com/sanfilippo-smeup/daylight-commander.git
 cd daylight-commander
-uv build              # → dist/daylight_commander-1.0.0-py3-none-any.whl + .tar.gz
+uv build              # → dist/daylight_commander-1.2.0-py3-none-any.whl + .tar.gz
 uv tool install .     # install the local package as a tool
 ```
 
@@ -106,8 +106,9 @@ uv run daylight       # from a source checkout (option 4)
 The TUI opens with two directory panes. Move the cursor with the arrow keys,
 press `Ctrl+T` to switch panes, and use the F-keys below for file
 operations. Press `Ctrl+P` for the command palette; every
-page (Files `Ctrl+1`, Viewers `Ctrl+2`, Properties `Ctrl+3`, Settings
-`Ctrl+4`) is also reachable from the palette and its tab.
+page (Files `Ctrl+1`, Viewers `Ctrl+2`, Properties `Ctrl+3`, Settings `Ctrl+4`,
+Stats `Ctrl+5`, Builder `Ctrl+6`, plus the dynamic Dashboard tab) is also
+reachable from the palette and its tab.
 
 ## Keybindings
 
@@ -243,7 +244,7 @@ The agents ran inside [OpenCode](https://opencode.ai), on Ollama-hosted models.
 **The workflow.** Each feature moved through a repeatable chain:
 
 1. The owner and Coordinator agreed a plan of bounded, testable feature cards
-   (DC-001 … DC-022) derived from a frozen PRD baseline.
+   (DC-001 … DC-032) derived from a frozen PRD baseline.
 2. The Builder implemented one card, added tests, and reported precise claims.
 3. A deterministic verifier (`triad-verify`) recorded the real gate results —
    `uv run ruff check .` and `uv run pytest -q` — as environment-derived
@@ -254,8 +255,8 @@ The agents ran inside [OpenCode](https://opencode.ai), on Ollama-hosted models.
    to the next dependency-satisfied card; on rework, the work looped back to the
    Builder.
 
-Roughly 22 cards were delivered this way (plus a handful of targeted fixes),
-with 559 passing tests and 14 UI snapshots guarded by the gates. When a card hit
+Roughly 32 cards were delivered this way (plus a handful of targeted fixes),
+with 802 passing tests and 16 UI snapshots guarded by the gates. When a card hit
 a real fork in the road — a stale baseline, a flaky performance test, an
 ambiguous acceptance criterion — work stopped and the owner decided; ordinary
 implementation disagreements were resolved by the loop. See

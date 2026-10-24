@@ -5,6 +5,66 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-22
+
+### Added
+
+- **AI dashboard builder** — a `Ctrl+6` **Builder** tab where a plain-language
+  prompt is answered by an embedded [`opencode`](https://opencode.ai) agent with
+  one declarative JSON dashboard specification (clarifying questions supported).
+  The specification is validated against a strict allowlist and rendered in a
+  dedicated **Dashboard** tab with the app's own components and theme tokens —
+  summary cards, bar charts, share bars, histograms, calendar heatmap, and
+  tables. No generated code, HTML, SVG, or ANSI output is ever rendered or
+  executed (DC-024 … DC-032).
+- **opencode v2 support** — HTTP Basic auth, the `/api` endpoints,
+  `session.text.*` streaming, and `form.*` clarifying questions, with automatic
+  detection of, and fallback to, the v1 protocol. When neither works, the
+  Builder shows a hint and the rest of the app is unaffected (DC-027, DC-028;
+  ADR-015).
+- **Dashboard specification contract** — a versioned `schema_version: 1` model,
+  a strict validator with path-bearing errors (1–20 blocks, allowlisted
+  kind/source pairs, `top_n` 1–50, theme tokens, exact key sets), and a
+  deterministic binder that turns allowlisted sources into render-ready data
+  from `DirectoryStats` (DC-029).
+- **Native Dashboard tab** — one reusable tab created on demand and bound to the
+  dashboard's directory; `Ctrl+R` recomputes it and `Ctrl+S` / `Ctrl+L` save and
+  reload the specification (DC-030, DC-031).
+- **Dashboard persistence** — JSON specifications (name, prompt, spec, directory,
+  timestamps) under `$XDG_DATA_HOME/daylight/dashboards`, falling back to
+  `~/.local/share/daylight/dashboards`. Revision-5 script artifacts are listed
+  as "(legacy)" and never executed or rendered (DC-031).
+- Dashboard page snapshot plus v2 stub end-to-end coverage of the spec flow
+  (DC-032).
+
+### Changed
+
+- README documents the native dashboard flow, its controls, the `opencode`
+  prerequisite, legacy artifacts, and the POC limits.
+- PRD re-baselined to **Revision 5** (`FR-801…FR-808`, `specs/CHANGES-v5.md`)
+  and then **Revision 6** (native TUI dashboards, `specs/CHANGES-v6.md`).
+  **ADR-014** (embedded opencode server + sandboxed script runner) is superseded
+  for the Builder by **ADR-016** (declarative spec + native render); **ADR-015**
+  (opencode v2 transport) remains in force.
+
+### Fixed
+
+- Builder worker lifecycle: worker groups are cancelled on unmount and UI posts
+  are guarded after teardown, so the full test suite no longer hangs (DC-031).
+- Opening a dashboard performs exactly one statistics scan instead of two
+  (DC-030).
+- The live `POST /session` 405 defect on opencode v2 is fixed by the
+  version-aware client (DC-027).
+
+### Notes
+
+- The Builder is a proof-of-concept: single-user and local, bound to one
+  directory per dashboard, and it requires the `opencode` CLI on `PATH`. The
+  opencode v2 API is experimental upstream, so every agent reply is validated
+  and never trusted.
+- Gates for this release: `uv run ruff check .` clean and `uv run pytest -q` —
+  802 passed, including 16 UI snapshots.
+
 ## [1.1.0] - 2026-10-16
 
 ### Added
