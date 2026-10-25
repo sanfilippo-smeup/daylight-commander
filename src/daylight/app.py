@@ -26,14 +26,19 @@ from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.reactive import var
 from textual.widget import Widget
-from textual.widgets import Tabs
+from textual.widgets import Tab, Tabs
 
 from daylight import themes
 from daylight.components import file_table
 from daylight.components.command_palette import DaylightCommandProvider, PaletteCommand
 from daylight.components.modules.builder_page import BuilderPage
 from daylight.components.modules.dashboard_page import DashboardPage
-from daylight.components.modules.file_list import FilesPage, LocationChanged
+from daylight.components.modules.file_list import (
+    RECURSIVE_MODES,
+    FilesPage,
+    LocationChanged,
+)
+from daylight.components.modules.filetypes_page import FileTypesPage
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.settings_page import SettingsPage
 from daylight.components.modules.stats_page import StatsPage
@@ -53,6 +58,7 @@ PAGE_LABELS: dict[str, str] = {
     "settings": "Settings",
     "stats": "Stats",
     "builder": "Builder",
+    "filetypes": "File types",
 }
 
 #: The page the app starts on.
@@ -86,6 +92,7 @@ class DaylightApp(App[None]):
         "styles/stats.tcss",
         "styles/builder.tcss",
         "styles/dashboard.tcss",
+        "styles/filetypes.tcss",
     ]
     BINDINGS = [
         # The only two app-wide hints the footer has room for; the tab keys are
@@ -137,6 +144,26 @@ class DaylightApp(App[None]):
             show=False,
             id="goto_builder",
         ),
+        Binding(
+            DEFAULT_KEYBINDINGS["goto_filetypes"],
+            "goto_filetypes",
+            "File types",
+            show=False,
+            id="goto_filetypes",
+        ),
+        # DC-036: the tab walk for terminals that never transmit
+        # ``ctrl+digit``. Like the digit keys these are hidden from the footer;
+        # the README and the palette present them.
+        Binding(
+            DEFAULT_KEYBINDINGS["next_page"], "next_page", "Next tab", show=False, id="next_page"
+        ),
+        Binding(
+            DEFAULT_KEYBINDINGS["previous_page"],
+            "previous_page",
+            "Previous tab",
+            show=False,
+            id="previous_page",
+        ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
     COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
@@ -151,6 +178,7 @@ class DaylightApp(App[None]):
         "settings": SettingsPage,
         "stats": StatsPage,
         "builder": BuilderPage,
+        "filetypes": FileTypesPage,
         "dashboard": DashboardPage,
     }
 
@@ -162,6 +190,11 @@ class DaylightApp(App[None]):
         ("Go to Settings", "goto_settings", "Theme and keybindings"),
         ("Go to Stats", "goto_stats", "Directory statistics for the active pane"),
         ("Go to Builder", "goto_builder", "Build a dashboard with AI"),
+        ("Go to File types", "goto_filetypes", "Files by extension for the active pane"),
+        # DC-036: the same tab walk, reachable without memorizing a key (the
+        # palette is where the footer-hidden tab keys live).
+        ("Next tab", "next_page", "Cycle to the next page"),
+        ("Previous tab", "previous_page", "Cycle to the previous page"),
         ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
     )
 
@@ -249,7 +282,11 @@ class DaylightApp(App[None]):
         The bar reads in :data:`HINT_ORDER`'s sequence (DC-019): the file
         operations, then Palette, Switch pane, Quit. Actions the order does not
         name keep their page-then-app declaration order, ahead of the named
-        ones.
+        ones. One dynamic hint is appended for the one state the static
+        bindings cannot express: the Files page on screen with a recursive or
+        content search engaged (DC-037) names the cycling key and the mode;
+        outside that state the footer stays byte-identical to the pinned
+        DC-019 order.
         """
         page = self._pages.get(self.active_page)
         bindings: list[BindingType] = []
@@ -271,7 +308,30 @@ class DaylightApp(App[None]):
             rank = HINT_ORDER.get(binding.id or "", -1)
             collected.append((rank, position, key, binding.description or binding.action))
         collected.sort()
-        return [(key, description) for _, _, key, description in collected]
+        hints = [(key, description) for _, _, key, description in collected]
+        hints.extend(self._search_mode_hint(page))
+        return hints
+
+    def _search_mode_hint(self, page: Widget | None) -> list[tuple[str, str]]:
+        """The engaged Files search mode as one compact footer hint (DC-037 AC1).
+
+        ``page`` is the widget the active tab shows, so only a *shown* Files
+        page contributes: a search left engaged on an off-screen tab never
+        leaks into another page's footer. There is a hint in no other state --
+        the shared bar must be open and the active panel's mode must be
+        recursive or content -- which is what keeps the default Files footer
+        (Filter mode, bar closed, plain listing) byte-identical.
+        """
+        files = page if isinstance(page, FilesPage) else None
+        if files is None or not files.is_ready or not files.filter_input.display:
+            return []
+        mode = files.active.search_mode
+        if mode not in RECURSIVE_MODES:
+            return []
+        # A rebound cycling key is the key that works, so it is the key the
+        # hint shows (AC2, like every binding above).
+        key = self.app_config.keybindings.get("cycle_search", DEFAULT_KEYBINDINGS["cycle_search"])
+        return [(key, f"Search: {mode.title()}")]
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -383,6 +443,11 @@ class DaylightApp(App[None]):
             # already got (DC-023, AC6); the page is focusable so ctrl+r works.
             page.refresh_stats()
             page.focus()
+        elif isinstance(page, FileTypesPage):
+            # Same contract as the Stats tab: cached directories render at once,
+            # and the page takes focus so ctrl+r reaches its binding.
+            page.refresh_filetypes()
+            page.focus()
         elif isinstance(page, BuilderPage):
             # The keyboard goes straight to the prompt, so the user can type
             # the moment the tab opens (DC-025); its ctrl+s/l/r keys bubble
@@ -412,6 +477,11 @@ class DaylightApp(App[None]):
             stats = self._pages.get("stats")
             if isinstance(stats, StatsPage):
                 stats.refresh_stats()
+        # The File types tab follows the path the same way (DC-034).
+        if self.active_page == "filetypes":
+            filetypes = self._pages.get("filetypes")
+            if isinstance(filetypes, FileTypesPage):
+                filetypes.refresh_filetypes()
 
     def update_path(self) -> None:
         """Show the directory being browsed in the header."""
@@ -447,9 +517,67 @@ class DaylightApp(App[None]):
         """``ctrl+6``: show the Builder page (DC-025)."""
         self.show_page("builder")
 
+    def action_goto_filetypes(self) -> None:
+        """``ctrl+7``: show the File types page (DC-034)."""
+        self.show_page("filetypes")
+
     def action_goto_dashboard(self) -> None:
         """Palette: show the Dashboard tab (DC-030); offered once a dashboard exists."""
         self.show_page("dashboard")
+
+    # -- the portable tab walk (DC-036) ------------------------------------
+
+    def action_next_page(self) -> None:
+        """``ctrl+n``: show the page of the next tab, wrapping at the last one."""
+        self._cycle_page(+1)
+
+    def action_previous_page(self) -> None:
+        """``ctrl+b``: show the page of the previous tab, wrapping at the first."""
+        self._cycle_page(-1)
+
+    def _cycle_page(self, step: int) -> None:
+        """Show the page ``step`` positions from the active one in tab order.
+
+        The order is the live tab strip's, not the static ``PAGES`` table,
+        because the dynamic Dashboard tab exists only once a dashboard was
+        opened (DC-030); it joins the walk just while its page is mounted. With
+        fewer than two live tabs there is nothing to cycle, so the active page
+        is left as it is.
+        """
+        live = self._live_tab_pages()
+        if len(live) < 2:
+            return
+        try:
+            index = live.index(self.active_page)
+        except ValueError:
+            # The active page is not a tab yet -- a just-opened dashboard whose
+            # tab is still being attached -- so the walk continues from the
+            # strip's other end instead of crashing on the missing stop.
+            index = 0 if step < 0 else -1
+        self.show_page(live[(index + step) % len(live)])
+
+    def _live_tab_pages(self) -> list[str]:
+        """The page names on the live tab strip, in strip order.
+
+        A tab id is its page name (ADR-005). Every static page's tab is always
+        live; the one dynamic tab is kept only while its page is mounted, so a
+        stop can never select a tab with nothing behind it -- no empty page, no
+        dead tab.
+        """
+        pages: list[str] = []
+        for tab in self.tabs.query(Tab):
+            name = tab.id or ""
+            if name not in self.PAGES:
+                continue
+            if name == "dashboard" and not self._dashboard_is_live():
+                continue
+            pages.append(name)
+        return pages
+
+    def _dashboard_is_live(self) -> bool:
+        """Whether the Dashboard page is mounted, i.e. its tab has a page (DC-030)."""
+        page = self._pages.get("dashboard")
+        return isinstance(page, DashboardPage) and page.is_mounted
 
     # -- the AI dashboard (DC-030) -----------------------------------------
 
@@ -638,12 +766,19 @@ class DaylightApp(App[None]):
                 dashboard_entry = self._dashboard_palette_entry()
                 if dashboard_entry is not None:
                     commands.append(dashboard_entry)
+        # A shell action that is also a keybinding ("Next tab" and
+        # "Previous tab", the DC-036 tab walk) is listed once: one entry per
+        # action, never the same action twice under the same title.
+        shell_titles = {title for title, _action, _description in self.SHELL_ACTIONS}
         overrides = self.app_config.keybindings
         for binding in Binding.make_bindings(list(self.BINDINGS)):
+            title = binding.description or binding.action
+            if title in shell_titles:
+                continue
             key = overrides.get(binding.id or "", binding.key)
             commands.append(
                 PaletteCommand(
-                    binding.description or binding.action,
+                    title,
                     f"press {format_key(key)}",
                     partial(self.call_next, self.run_action, binding.action),
                 )

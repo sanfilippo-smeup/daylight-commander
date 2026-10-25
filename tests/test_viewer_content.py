@@ -234,6 +234,56 @@ def test_read_text_stops_at_the_limit(tmp_path: Path) -> None:
     assert len(text) <= 40
 
 
+def test_read_text_bounds_bytes_not_characters(tmp_path: Path) -> None:
+    """The limit is a work bound: multibyte text must not double the bytes read."""
+    target = tmp_path / "accents.txt"
+    target.write_text("\u00e9" * 100, encoding="utf-8")
+    text, truncated = content.read_text(target, limit=120)
+    assert truncated is True
+    assert len(text.encode("utf-8")) <= 120
+
+
+def test_view_limits_have_the_contract_values() -> None:
+    """One byte and one line bound for every inline kind (DC-035, AC1)."""
+    assert content.VIEW_LIMIT == 1_048_576
+    assert content.VIEW_LINE_LIMIT == 10_000
+
+
+def test_load_view_caps_the_number_of_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A megabyte of one-word lines must not mount 95,000 rows."""
+    target = tmp_path / "many.txt"
+    target.write_text(
+        "\n".join(f"row {number}" for number in range(1, 31)) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(content, "VIEW_LINE_LIMIT", 10)
+    document = content.load_view(target)
+    assert document.truncated is True
+    assert document.text.split("\n") == [f"row {number}" for number in range(1, 11)]
+    assert "more than 10 lines" in document.notice
+    assert "row 11" not in document.text
+
+
+def test_load_view_states_both_bounds_when_both_apply(tmp_path: Path) -> None:
+    """A file over 1 MiB *and* over the line cap must say both, not just KiB.
+
+    1.2 MB of 2-byte lines trips the byte bound first; with the notice as a
+    single fact it claimed only ``1024 KiB`` while the viewer also mounted
+    only :data:`VIEW_LINE_LIMIT` of its half-million lines.
+    """
+    target = tmp_path / "sliver.log"
+    target.write_text("x\n" * 600_000, encoding="utf-8")
+    assert target.stat().st_size == 1_200_000
+    document = content.load_view(target)
+    assert document.truncated is True
+    assert document.notice == (
+        "file is larger than 1024 KiB and has more than 10000 lines: "
+        "showing the first 10000 lines"
+    )
+    # What the viewer will actually mount: the first VIEW_LINE_LIMIT lines.
+    assert len(document.text.split("\n")) == 10_000
+
 
 def test_find_matches_reports_line_numbers(samples: Path) -> None:
     assert content.find_matches(samples / "notes.txt", "needle") == [40]
@@ -294,11 +344,11 @@ YAML_BODIES = (
 
 
 def test_load_view_treats_yaml_as_plain_text(samples: Path) -> None:
-    """YAML has no formatter: it is windowed like any other source file (AC3)."""
+    """YAML has no formatter: it is read verbatim like any other source file (AC3)."""
     document = content.load_view(samples / "conf.yaml")
     assert document.kind == "text"
     assert document.is_text_kind is True
-    assert document.text == ""
+    assert document.text == SAMPLE_YAML
     assert document.notice == ""
     assert document.size == (samples / "conf.yaml").stat().st_size
 
@@ -342,6 +392,18 @@ def test_load_view_truncates_a_large_document(tmp_path: Path) -> None:
     assert "larger than" in document.notice
 
 
+def test_load_view_truncates_plain_text_at_the_same_limit(tmp_path: Path) -> None:
+    """Every inline kind shares VIEW_LIMIT, so a huge log degrades like JSON."""
+    big = tmp_path / "big.log"
+    big.write_text("\n".join(f"row {number}" for number in range(1, 201)), encoding="utf-8")
+    document = content.load_view(big, limit=200)
+    assert document.kind == "text"
+    assert document.truncated is True
+    assert len(document.text) <= 200
+    assert "larger than" in document.notice
+    assert "row 200" not in document.text
+
+
 def test_load_view_never_returns_a_body_for_binary(samples: Path) -> None:
     document = content.load_view(samples / "shot.png")
     assert document.kind == "binary"
@@ -352,12 +414,14 @@ def test_load_view_of_a_directory_is_not_a_document(samples: Path) -> None:
     assert content.load_view(samples / "folder").kind == "directory"
 
 
-def test_load_view_of_plain_text_holds_no_body(samples: Path) -> None:
-    """Plain text is windowed on demand, so the document carries no body."""
-    document = content.load_view(samples / "notes.txt")
+def test_load_view_reads_plain_text_whole(samples: Path) -> None:
+    """Plain text is read whole (bounded by VIEW_LIMIT) so the body can scroll."""
+    target = samples / "notes.txt"
+    document = content.load_view(target)
     assert document.kind == "text"
-    assert document.text == ""
-    assert document.size == (samples / "notes.txt").stat().st_size
+    assert document.text == target.read_text(encoding="utf-8")
+    assert document.truncated is False
+    assert document.size == target.stat().st_size
     assert document.is_text_kind is True
 
 

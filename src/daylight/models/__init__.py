@@ -24,6 +24,7 @@ __all__ = [
     "FileProperties",
     "FileStat",
     "SandboxResult",
+    "SearchHit",
     "Theme",
     "ViewDocument",
     "VIEW_KINDS",
@@ -100,17 +101,39 @@ class DirEntry:
 
 
 @dataclass(frozen=True)
+class SearchHit:
+    """One Files-page search result row (DC-037).
+
+    A name hit carries the real entry (:attr:`entry`) and the path displayed in
+    the table, relative to the directory the search was rooted at. A content
+    hit is a match *inside* a file: the matching 1-based :attr:`line` and its
+    sanitized :attr:`snippet` ride along, and the entry always describes the
+    file the hit was found in rather than the line itself.
+    """
+
+    entry: DirEntry
+    relative: str
+    line: int = 0
+    snippet: str = ""
+
+    @property
+    def is_content(self) -> bool:
+        """True for a match found inside a file's text, not a name match."""
+        return self.line > 0
+
+
+@dataclass(frozen=True)
 class ViewDocument:
     """What the internal viewer should draw for one file (DC-004).
 
-        Produced only by :mod:`daylight.managers.content`, so the viewer widget never
-        decides *how* a format is read: it only renders :attr:`kind` and shows
-        :attr:`notice` when the content had to be degraded.
+    Produced only by :mod:`daylight.managers.content`, so the viewer widget never
+    decides *how* a format is read: it only renders :attr:`kind` and shows
+    :attr:`notice` when the content had to be degraded.
 
-    For ``markdown``/``json`` :attr:`text` is the formatted document and
-        is bounded by ``PRETTY_LIMIT``; :attr:`truncated` then says so. For ``text``
-        (YAML included) the widget asks the manager for a window of lines instead,
-        because a source file must never be materialised whole.
+    For ``markdown``/``json``/``text`` :attr:`text` is the (formatted) document
+    and is bounded by ``VIEW_LIMIT``; :attr:`truncated` then says the file was
+    cut at that limit. The whole bounded document is mounted in the viewer's
+    scrollable body, so every inline kind scrolls the same way.
     """
 
     kind: str
@@ -121,7 +144,7 @@ class ViewDocument:
 
     @property
     def is_text_kind(self) -> bool:
-        """True for the windowed plain/source viewer."""
+        """True for the numbered plain/source viewer (YAML included)."""
         return self.kind == "text"
 
 

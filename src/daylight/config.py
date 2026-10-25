@@ -23,6 +23,14 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "goto_settings": "ctrl+4",
     "goto_stats": "ctrl+5",
     "goto_builder": "ctrl+6",
+    "goto_filetypes": "ctrl+7",
+    # DC-036: two keys any terminal transmits for walking the tabs in order.
+    # Terminal.app never sends ``ctrl+digit`` at all, so ``ctrl+1``…``ctrl+7``
+    # above are dead keys there; these cover the same tabs without them and
+    # wrap around, while the digits stay available where the terminal sends
+    # them.
+    "next_page": "ctrl+n",
+    "previous_page": "ctrl+b",
     "up": "up",
     "down": "down",
     "switch_panel": "ctrl+t",
@@ -47,7 +55,11 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "edit": "f4",
     "copy_property": "ctrl+c",
     "next_match": "ctrl+g",
-    "search_viewer": "ctrl+f",
+    # DC-037: the Files search modes roll under ``ctrl+f`` (Filter → Recursive
+    # → Content), which is where the viewer find box used to sit; the find box
+    # moves to ``f2`` and ``ctrl+g`` stays the next-match key.
+    "cycle_search": "ctrl+f",
+    "search_viewer": "f2",
     "close_viewer": "escape",
     # External launches (DC-006). ``f9`` opens a URL found in the entry under the
     # cursor with the default browser, always behind a confirmation (FR-402).

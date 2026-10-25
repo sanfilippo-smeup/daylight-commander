@@ -139,7 +139,7 @@ def test_viewer_json_snapshot(snap_compare: Callable[..., bool]) -> None:
 
 
 def test_viewer_text_window_snapshot(snap_compare: Callable[..., bool]) -> None:
-    """``f3`` on plain text: one numbered window, scrolled two screens in."""
+    """``f3`` on plain text: one numbered document, scrolled two screens in."""
 
     async def run(pilot: Pilot) -> None:
         await viewer_step("code.py")(pilot)

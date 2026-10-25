@@ -181,8 +181,7 @@ async def test_the_page_shows_the_configured_defaults(tree: Path, config_path: P
         assert page.default_value("sort_reverse") == "descending"
         listing = page.defaults_list
         rows = [
-            str(listing.get_option_at_index(index).prompt)
-            for index in range(listing.option_count)
+            str(listing.get_option_at_index(index).prompt) for index in range(listing.option_count)
         ]
         assert any(row.endswith("yes") for row in rows)
 
@@ -344,9 +343,7 @@ async def test_the_settings_listing_offers_every_action_it_can_rebind(
 
 
 @run_async
-async def test_the_page_can_move_between_its_three_listings(
-    tree: Path, config_path: Path
-) -> None:
+async def test_the_page_can_move_between_its_three_listings(tree: Path, config_path: Path) -> None:
     """``d`` and ``k`` are how the page is navigable once it has three lists."""
     app = make_app(tree, config_path)
     async with app.run_test(size=(120, 32)) as pilot:
@@ -376,3 +373,70 @@ async def test_the_option_lists_are_the_ones_the_page_composes(
             widget = page.query_one(f"#{widget_id}", OptionList)
             assert widget.option_count > 0
         assert str(page.status.render()) == ""
+
+
+# -- DC-036: the tab walk keys are listed and rebindable --------------------
+
+
+@run_async
+async def test_the_keys_listing_shows_the_two_tab_walk_actions(
+    tree: Path, config_path: Path
+) -> None:
+    """The shipped walk keys are listed like every other action's."""
+    app = make_app(tree, config_path)
+    async with app.run_test(size=(120, 32)) as pilot:
+        await settle(pilot)
+        page = await open_settings(pilot, app)
+        await settle(pilot)
+        rows = page.keys_text().splitlines()
+        assert next(line for line in rows if line.endswith("next_page")).startswith("Ctrl+N")
+        assert next(line for line in rows if line.endswith("previous_page")).startswith("Ctrl+B")
+        # Both rows are rebindable through the page's own gesture.
+        listing = page.keys_widget
+        listing.focus()
+        listing.highlighted = key_row_for(page, "next_page")
+        await settle(pilot)
+        assert page.selected_action == "next_page"
+        listing.highlighted = key_row_for(page, "previous_page")
+        await settle(pilot)
+        assert page.selected_action == "previous_page"
+
+
+@run_async
+async def test_a_rebound_tab_walk_key_works_and_persists(tree: Path, config_path: Path) -> None:
+    """An override of ``next_page`` moves the walk and is read back by the next run."""
+    app = make_app(tree, config_path)
+    async with app.run_test(size=(120, 32)) as pilot:
+        await settle(pilot)
+        page = await open_settings(pilot, app)
+        await settle(pilot)
+        app.set_keybinding("next_page", "ctrl+o")
+        await settle(pilot)
+
+        # The listing shows the effective keys: the override, and the shipped
+        # one for the other direction.
+        next_row = next(
+            line for line in page.keys_text().splitlines() if line.endswith("next_page")
+        )
+        assert next_row.startswith("Ctrl+O")
+        previous_row = next(
+            line for line in page.keys_text().splitlines() if line.endswith("previous_page")
+        )
+        assert previous_row.startswith("Ctrl+B")
+
+        # The new key walks the tab strip from the page on screen
+        # (Settings -> Stats, then Stats -> Builder)...
+        await pilot.press("ctrl+o")
+        await settle(pilot)
+        assert app.active_page == "stats"
+        assert app.tabs.active == "stats"
+        # ...while the key it replaced is dead.
+        await pilot.press("ctrl+n")
+        await settle(pilot)
+        assert app.active_page == "stats"
+        await pilot.press("ctrl+o")
+        await settle(pilot)
+        assert app.active_page == "builder"
+
+        # A fresh manager, standing in for the next run, reads it back.
+        assert ConfigManager(config_path).load().keybindings == {"next_page": "ctrl+o"}

@@ -31,6 +31,16 @@ hand-off to another application goes through :meth:`FilesPage.prompt_launch` and
 a :class:`~daylight.modals.LaunchScreen` that names the target and the
 application (FR-403). ``f4`` still hands text to ``$EDITOR`` -- that runs in this
 terminal, so it is not an external launch.
+
+The search bar (DC-037) has three modes on the active panel: ``filter``
+(FR-104's current-directory filter, as-you-type), ``recursive`` (name matches
+below the pane directory) and ``content`` (text matches inside files). The two
+scanning modes debounce the shared input by :data:`SEARCH_DEBOUNCE` seconds,
+then scan on a ``search`` worker group thread -- cancellable by
+:class:`daylight.managers.search.CancelToken`, gated by a generation counter
+and the mode/query/root quadruple, so nothing stale can ever take over the
+table. Hits are read-only rows; ``Escape``, an empty query or a directory
+change tears the search view down and the real listing returns untouched.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ from textual.coordinate import Coordinate
 from textual.events import Key, MouseScrollDown, MouseScrollUp, Resize
 from textual.message import Message
 from textual.reactive import var
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static, TabbedContent, TabPane, Tabs
 
@@ -55,14 +66,18 @@ from daylight.components.modules.viewer import ViewerPanel
 from daylight.forms import LINK_FORM, NEW_FILE_FORM, NEW_FOLDER_FORM, RENAME_FORM
 from daylight.managers import ConfigManager, FileManager
 from daylight.managers.external import EditDispatch, LaunchRequest, is_url
-from daylight.models import DirEntry
+from daylight.managers import search
+from daylight.models import DirEntry, SearchHit
 from daylight.modals import ConfirmScreen, FormScreen, LaunchScreen, ProgressScreen
 from daylight.modals.progress import Operation
 
 __all__ = [
+    "DOUBLE_ENTER_TIMEOUT",
     "PANEL_NAMES",
+    "RECURSIVE_MODES",
     "SCROLL_STEP",
     "SCROLLBAR_RESERVE",
+    "SEARCH_DEBOUNCE",
     "TYPEAHEAD_TIMEOUT",
     "FilePanel",
     "FilesPage",
@@ -97,8 +112,34 @@ CURSOR_ACTIONS: frozenset[str] = frozenset(
     {"cursor_up", "cursor_down", "page_up", "page_down", "scroll_home", "scroll_end"}
 )
 
+#: The Files-page actions that only make sense while a viewer is mounted.
+#:
+#: They are ``priority`` (so they win over the listing's horizontal page keys),
+#: which would otherwise consume ``ctrl+pageup``/``ctrl+pagedown`` even with no
+#: viewer open. Reporting them disabled lets those keys fall through to the
+#: focused table again.
+VIEWER_ACTIONS: frozenset[str] = frozenset(
+    {"viewer_up", "viewer_down", "viewer_page_up", "viewer_page_down"}
+)
+
 #: Seconds of inactivity after which the type-ahead prefix is forgotten.
 TYPEAHEAD_TIMEOUT = 1.0
+
+#: How close two ``enter`` presses on the same file must be to count as a double
+#: enter (which hands the file to the OS default viewer). Half a second is the
+#: usual desktop double-click window; a slower second enter just re-opens the
+#: internal viewer.
+DOUBLE_ENTER_TIMEOUT = 0.5
+
+#: Seconds a recursive/content query waits after the last keystroke before its
+#: scan starts (DC-037 AC5). A scan walks the whole tree, so it is the
+#: debounce that keeps search-as-you-type off the event loop; ``filter``
+#: keeps its immediate as-you-type behavior and never debounces.
+SEARCH_DEBOUNCE = 0.25
+
+#: The two modes whose scan goes below the pane directory; ``filter`` is not
+#: one of them (it narrows the current listing in place).
+RECURSIVE_MODES: frozenset[str] = frozenset({"recursive", "content"})
 
 
 class TypeAhead:
@@ -208,6 +249,26 @@ class FilePanel(Vertical):
         self.window_stop = 0
         #: Accumulated type-ahead prefix (FR-109); reset on navigation and idle.
         self._typeahead = TypeAhead()
+        #: The last ``(path, timestamp)`` an ``enter`` opened a file for, so the
+        #: same file entered again within :data:`DOUBLE_ENTER_TIMEOUT` can be
+        #: handed to the OS viewer instead.
+        self._last_enter: tuple[Path, float] | None = None
+        # -- search state (DC-037) ------------------------------------------
+        #: This panel's search mode; ``/`` re-selects ``filter`` explicitly.
+        self.search_mode = "filter"
+        #: The query of the most recent recursive/content request. It sits here,
+        #: not only in the shared input, so a mode cycle can re-run it and a
+        #: panel switch does not cross one panel's query with the other's.
+        self.search_query = ""
+        #: The finished scan's hits, displayed in the table while result view.
+        self._search_rows: list[SearchHit] = []
+        self._search_view = False
+        self._search_running = False
+        self._search_capped = False
+        self._search_token: search.CancelToken | None = None
+        self._search_generation = 0
+        self._search_root: Path | None = None
+        self._search_timer: Timer | None = None
         # The child widgets are built here rather than in ``compose`` so the
         # panel can hand out stable references before it is mounted.
         self._breadcrumb = Static("", id=f"breadcrumb-{name}", classes="breadcrumb")
@@ -289,6 +350,10 @@ class FilePanel(Vertical):
         if self.is_mounted:
             self._tabs.hide_tab(self._viewer_pane.id or "")
 
+    def cancel_double_enter(self) -> None:
+        """Forget a pending double-enter gesture; the next enter starts over."""
+        self._last_enter = None
+
     def _empty_mount(self) -> None:
         """Empty the mount point without touching the tabsheet.
 
@@ -301,11 +366,22 @@ class FilePanel(Vertical):
         self._mount_point.remove_class("visible")
 
     def previous_tab(self) -> None:
-        """Move this panel's tabsheet one tab back (keyboard switching, DC-010)."""
+        """Move this panel's tabsheet one tab back (keyboard switching, DC-010).
+
+        The switch can leave the Viewer tab, hiding the viewer: then the
+        pending double-enter gesture armed on the listing dies with it (AC5),
+        and the next ``enter`` may only re-open the viewer, never launch.
+        """
+        self.cancel_double_enter()
         self._tabs.query_one(Tabs).action_previous_tab()
 
     def next_tab(self) -> None:
-        """Move this panel's tabsheet one tab forward (keyboard switching, DC-010)."""
+        """Move this panel's tabsheet one tab forward (keyboard switching, DC-010).
+
+        Same reason as :meth:`previous_tab`: the switch may hide the viewer,
+        so the pending double-enter gesture dies with it (AC5).
+        """
+        self.cancel_double_enter()
         self._tabs.query_one(Tabs).action_next_tab()
 
     @property
@@ -315,8 +391,17 @@ class FilePanel(Vertical):
 
     @property
     def total_count(self) -> int:
-        """Number of entries the listing holds, materialised or not."""
-        return len(self.visible_entries)
+        """Number of rows the current view holds, materialised or not."""
+        return len(self.display_rows())
+
+    def display_rows(self) -> list[DirEntry] | list[SearchHit]:
+        """The rows the table indexes right now: search hits, or the listing.
+
+        Search mode keeps :attr:`visible_entries` untouched (the scanned
+        listing stays cached), so leaving search restores it with no re-read;
+        only *which* list the window, cursor and type-ahead work over flips.
+        """
+        return self._search_rows if self._search_view else self.visible_entries
 
     @property
     def viewport_rows(self) -> int:
@@ -365,12 +450,26 @@ class FilePanel(Vertical):
         return [str(self.table.get_row_at(index)[0]) for index in range(self.table.row_count)]
 
     def selected_entry(self) -> DirEntry | None:
-        """The entry under the table cursor, or None when the cursor is off the rows."""
-        if not self.visible_entries or self.table.row_count <= 0:
+        """The entry under the table cursor, or None when the cursor is off the rows.
+
+        In search view the cursor sits on a *result row*, which is read-only
+        (DC-037 AC7): no entry is returned, so sort/batch operations cannot act
+        on a search hit as if it were a directory entry.
+        """
+        if self._search_view or not self.visible_entries or self.table.row_count <= 0:
             return None
         index = self.cursor_index
         if 0 <= index < len(self.visible_entries):
             return self.visible_entries[index]
+        return None
+
+    def selected_hit(self) -> SearchHit | None:
+        """The search hit under the table cursor, or None outside search view."""
+        if not self._search_view or self.table.row_count <= 0:
+            return None
+        index = self.cursor_index
+        if 0 <= index < len(self._search_rows):
+            return self._search_rows[index]
         return None
 
     def cursor_entry(self) -> DirEntry | None:
@@ -388,12 +487,15 @@ class FilePanel(Vertical):
         return self.app.query_one(FilesPage)
 
     def name_at(self, index: int) -> str:
-        """Return the display name of listing row ``index``, materialised or not."""
-        if 0 <= index < len(self.visible_entries):
-            entry = self.visible_entries[index]
-            return str(
-                file_table.build_row(entry, selected=entry.path in self._selected)[0]
-            )
+        """Return the display name of row ``index``, materialised or not."""
+        rows = self.display_rows()
+        if 0 <= index < len(rows):
+            if self._search_view:
+                cells = file_table.build_hit_row(rows[index])
+            else:
+                entry = rows[index]
+                cells = file_table.build_row(entry, selected=entry.path in self._selected)
+            return str(cells[0])
         return ""
 
     # -- lifecycle ---------------------------------------------------------
@@ -417,20 +519,29 @@ class FilePanel(Vertical):
         focused = self.app.focused
         return isinstance(focused, DataTable) and isinstance(focused.parent, PropertiesView)
 
+    def viewer_body_focused(self) -> bool:
+        """True while this panel's viewer body owns the keyboard (Tab in the pane)."""
+        viewer = self.mounted_viewer
+        return isinstance(viewer, ViewerPanel) and self.app.focused is viewer.body
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
-        """Hand the cursor keys back to the focused properties table (AC6).
+        """Hand the cursor keys back to a focused child that scrolls itself.
 
         The six cursor bindings above are ``priority``, and the framework resolves
         those from the app down *before* the focused widget's own bindings -- in
         either panel, since a binding is not scoped to the pane it sits in. That
         is what keeps the virtual listing cursor ahead of the panel's DataTable,
         but it would also swallow ``up``/``down``/``pageup``/``pagedown``/``home``/
-        ``end`` while the *properties* table is the focused widget, leaving only
-        its first field reachable by keyboard. Reporting these actions as disabled
-        lets the key fall through to the table, which binds the same six keys.
+        ``end`` while a child that scrolls itself is focused: the *properties*
+        table (AC6) or the viewer body after Tab. Reporting these actions as
+        disabled lets the key fall through to that child, which binds the same
+        keys, so arrow/page keys scroll the file exactly as they do in the
+        full-page Viewers tab.
         """
         del parameters
-        if action in CURSOR_ACTIONS and self.properties_table_focused():
+        if action in CURSOR_ACTIONS and (
+            self.properties_table_focused() or self.viewer_body_focused()
+        ):
             return False
         return True
 
@@ -475,14 +586,23 @@ class FilePanel(Vertical):
         return self.app.focused is self.table
 
     def _typeahead_order(self) -> list[int]:
-        """Display indices of the visible entries in case-insensitive name order.
+        """Display indices of the current rows in case-insensitive name order.
 
         Type-ahead is name-based (FR-109), so a match found in this order is
-        mapped back to the row the table actually shows. That is what makes the
-        alphabetical fallback hold under a size/time/type sort, where listing
-        order and name order disagree.
+        mapped back to the row the table actually shows. In search view the
+        rows are hits, and the name type-ahead looks for is the hit's real
+        name (the last path segment), not the relative display path. That is
+        what makes the alphabetical fallback hold under a size/time/type sort
+        or a hit list, where row order and name order disagree.
         """
-        return file_table.name_order(self.visible_entries)
+        keys = self._typeahead_keys()
+        return [index for index, _ in sorted(enumerate(keys), key=lambda pair: pair[1].casefold())]
+
+    def _typeahead_keys(self) -> list[str]:
+        """The text per row type-ahead matches, in the row order on screen."""
+        if self._search_view:
+            return [hit.entry.name for hit in self._search_rows]
+        return [entry.name for entry in self.visible_entries]
 
     def _next_by_name(self, order: list[int]) -> int:
         """Display index of the entry after the cursor in name order.
@@ -524,7 +644,8 @@ class FilePanel(Vertical):
         always: a printable key the listing claimed is consumed either way.
         """
         order = self._typeahead_order()
-        names = [self.visible_entries[index].name for index in order]
+        keys = self._typeahead_keys()
+        names = [keys[index] for index in order]
         target = self._typeahead.advance(character, names, monotonic())
         if target is None:
             self.move_cursor(self._next_by_name(order))
@@ -539,12 +660,31 @@ class FilePanel(Vertical):
 
         A rebuilt listing invalidates any half-typed prefix, so a copy, delete or
         refresh cannot leave the cursor jumping to a stale match (FR-109).
+
+        A recursive/content search alive at this point is cancelled -- its
+        results describe the state this reload is about to replace (DC-037).
+        It is *re-run* only when it belongs to this same directory (a
+        hidden-file toggle, or a file operation that finished): then the scan
+        is rescheduled with the same query and mode. A directory change is
+        navigation: the search is left dead and the plain listing comes back,
+        as AC5 asks.
         """
+        was_searching = self._search_running or self._search_view
+        resume = (
+            was_searching
+            and self._search_root == self.directory
+            and self.search_mode in RECURSIVE_MODES
+            and len(self.search_query.strip()) >= search.SEARCH_MIN_QUERY
+        )
+        if was_searching:
+            self._abandon_search()
         self.entries = []
         self.visible_entries = []
         self._listing = True
         self._typeahead.reset()
         self.show_range(0, 0)
+        if resume:
+            self.schedule_search()
         self.scan()
 
     def refresh_view(self) -> None:
@@ -577,6 +717,10 @@ class FilePanel(Vertical):
 
     def apply_entries(self, visible: list[DirEntry]) -> None:
         """Install an ordered listing and show it from the top."""
+        # A re-filter, a re-sort or a re-scan rebuilds the listing from the
+        # top, so the row a pending double-enter was armed on is no longer
+        # the cursor row: the gesture must not launch anything (AC5).
+        self.cancel_double_enter()
         self.visible_entries = visible
         # A re-filter or a re-sort must not keep marks pointing at rows the
         # user can no longer see, or a batch op would act on a stale path.
@@ -610,12 +754,17 @@ class FilePanel(Vertical):
         if force or moved or not self.table.row_count:
             self.window_start, self.window_stop = start, stop
             self.table.clear()
-            self.table.add_rows(
-                file_table.build_rows(
-                    self.visible_entries[start:stop],
-                    selected=frozenset(self._selected),
+            if self._search_view:
+                # Hits render through the same window bounds the listing uses:
+                # the table holds one viewport, the virtual cursor the rest.
+                self.table.add_rows(file_table.build_hit_rows(self._search_rows[start:stop]))
+            else:
+                self.table.add_rows(
+                    file_table.build_rows(
+                        self.visible_entries[start:stop],
+                        selected=frozenset(self._selected),
+                    )
                 )
-            )
         self.view_offset = offset
         if self.table.row_count:
             self.table.cursor_coordinate = Coordinate(
@@ -625,6 +774,9 @@ class FilePanel(Vertical):
 
     def move_cursor(self, index: int) -> None:
         """Put the cursor on listing row ``index``, scrolling the window to it."""
+        # Moving the cursor ends a double-enter gesture: the second enter must be
+        # on the same, unchanged row.
+        self.cancel_double_enter()
         start, stop = self.window_start, self.window_stop
         viewport = self.viewport_rows
         offset = self.view_offset
@@ -636,6 +788,11 @@ class FilePanel(Vertical):
 
     def scroll_view(self, delta: int) -> None:
         """Move the virtual viewport by ``delta`` rows, dragging the cursor along."""
+        # Wheel scrolling can drag the cursor, so it ends a double-enter
+        # gesture (AC5); the guard keeps the hot wheel path O(1) when no
+        # gesture is pending.
+        if self._last_enter is not None:
+            self.cancel_double_enter()
         offset = self.view_offset + delta
         cursor = min(max(self.cursor_index, offset), offset + self.viewport_rows - 1)
         self.show_range(offset, cursor)
@@ -667,6 +824,255 @@ class FilePanel(Vertical):
         """Narrow the visible rows to ``text``."""
         self.filter_text = text
         self.refresh_view()
+
+    # -- search (DC-037) ----------------------------------------------------
+
+    @property
+    def search_active(self) -> bool:
+        """True while this panel's table shows search results rather than the listing."""
+        return self._search_view
+
+    @property
+    def searching(self) -> bool:
+        """True while a scan is in flight or its results are on the table.
+
+        This is the state ``Escape`` unwinds: a scan mid-flight or a hit list
+        showing both belong to the search, and leaving it must bring the
+        plain listing back (AC5). Bar open with nothing beyond one character
+        is still just the listing, so Escape there falls through unchanged.
+        """
+        return self._search_running or self._search_view
+
+    def cycle_search(self) -> None:
+        """Roll this panel through Filter → Recursive → Content (AC1).
+
+        The mode belongs to the panel; the query belongs to the shared bar and
+        survives the roll untouched. Rolling opens the bar (``Ctrl+F`` asks
+        for the bar either way). Rolling into a scanning mode schedules a
+        scan for the bar's query -- a real scan only for two-or-more
+        characters, else the plain listing is restored. Rolling into Filter
+        stops any scan and re-applies the preserved query to the plain
+        listing through the normal ``set_filter`` path (AC1): the bar still
+        shows the query the scans ran with, so a table that showed everything
+        would disagree with the bar it sits under.
+
+        The other pane is untouched: its own mode, filter text and (if any)
+        its result view stay put, and this panel's old results are never
+        cleared until its own state changes.
+        """
+        self.search_mode = file_table.next_search_mode(self.search_mode)
+        page = self.page
+        if page.is_ready and page.active is self:
+            page.show_filter()
+            page.sync_search_placeholder()
+            if self.search_mode == "filter":
+                self.clear_search_results()
+                self.apply_preserved_filter()
+                return
+            self.set_search_query(page.filter_input.value)
+
+    def use_filter_mode(self) -> None:
+        """Switch this panel back to Filter mode (``/``, FR-104 + DC-037).
+
+        Any scan in flight is cancelled, any hit view is dismantled and the
+        plain listing comes back first, so the filter-as-you-type path below
+        works over real listing rows as always. The bar re-opens holding the
+        query the scans ran with, so the preserved query is applied to that
+        listing too (AC1) -- the bar and the table never disagree.
+        """
+        self.clear_search_results()
+        self.search_mode = "filter"
+        self.apply_preserved_filter()
+
+    def apply_preserved_filter(self) -> None:
+        """Put the shared bar's preserved query on the plain listing (AC1).
+
+        A mode cycle or ``/`` lands on Filter while the bar still holds the
+        query a scanning mode ran with; narrowing the listing by that text is
+        what keeps the bar and the table agreeing. This goes through
+        :meth:`set_filter` -- the panel's own ``filter_text`` plus the normal
+        derive path -- never just the input's value. An empty bar filters to
+        the unfiltered listing, which is exactly the state
+        :meth:`clear_search_results` restored.
+        """
+        page = self.page
+        if page.is_ready and page.active is self:
+            self.set_filter(page.filter_input.value)
+
+    def set_search_query(self, query: str) -> None:
+        """Record this panel's query and (re)schedule its scan for it."""
+        self.search_query = query
+        self.schedule_search()
+
+    def schedule_search(self) -> None:
+        """Debounce this panel's next scan; typing fast lands only the last query.
+
+        An in-flight scan is not aborted here -- it is aborted by the scan
+        that supersedes it, right when it starts; between keystrokes the
+        debounce timer is simply replaced. A query below
+        :data:`~daylight.managers.search.SEARCH_MIN_QUERY` characters never
+        schedules a scan and restores the plain listing instead.
+        """
+        self._stop_search_timer()
+        if self.search_mode not in RECURSIVE_MODES:
+            return
+        if len(self.search_query.strip()) < search.SEARCH_MIN_QUERY:
+            self.clear_search_results()
+            return
+        self._search_timer = self.set_timer(SEARCH_DEBOUNCE, self._run_search)
+
+    def _run_search(self) -> None:
+        """Start the debounced scan for this panel's query (timer callback)."""
+        self._search_timer = None
+        if self.search_mode not in RECURSIVE_MODES:
+            return
+        query = self.search_query.strip()
+        if len(query) < search.SEARCH_MIN_QUERY:
+            return
+        self._cancel_scan()
+        token = search.CancelToken()
+        self._search_token = token
+        self._search_generation += 1
+        self._search_running = True
+        self._search_root = self.directory
+        self.update_breadcrumb()
+        self._scan_for_hits(self.search_mode, self.directory, query, self._search_generation, token)
+
+    @work(thread=True, exclusive=True, group="search")
+    def _scan_for_hits(
+        self,
+        mode: str,
+        root: Path,
+        query: str,
+        generation: int,
+        token: search.CancelToken,
+    ) -> None:
+        """Collect one bounded scan on a worker thread, then hand it back.
+
+        The token unwinds the walk the moment the UI flips it (a newer query,
+        a mode change, navigation, ``Escape``) and the worker returns before
+        touching the event loop; results that do survive are still gated by
+        the generation, mode, query *and* root on :meth:`_apply_search`, so a
+        scan that ends late can never overwrite what the user is reading.
+        """
+        manager: FileManager = self.app.file_manager  # type: ignore[attr-defined]
+        try:
+            if mode == file_table.SEARCH_MODES[1]:
+                hits = list(manager.iter_name_matches(root, query, cancelled=token))
+            else:
+                hits = list(manager.iter_content_matches(root, query, cancelled=token))
+        except search.SearchCancelled:
+            return
+        if token():
+            return
+        self.app.call_from_thread(self._apply_search, mode, root, query, generation, hits)
+
+    def _apply_search(
+        self,
+        mode: str,
+        root: Path,
+        query: str,
+        generation: int,
+        hits: list[SearchHit],
+    ) -> None:
+        """Install a finished scan's hits, dropping anything stale (AC5).
+
+        Nothing stale ever reaches the table: only the newest generation, run
+        in the current mode, with the current query, against the directory the
+        panel actually shows, can take over the view.
+        """
+        if (
+            generation != self._search_generation
+            or mode != self.search_mode
+            or query != self.search_query.strip()
+            or root != self.directory
+        ):
+            return
+        self._search_running = False
+        self._search_rows = hits
+        self._search_view = True
+        self._search_capped = len(hits) >= search.SEARCH_RESULT_LIMIT
+        # The hit list replaces the rows the pending double-enter was armed
+        # on: the gesture may never launch off a stale row (AC5).
+        self.cancel_double_enter()
+        self.show_range(0, 0, force=True)
+
+    def _cancel_scan(self) -> None:
+        """Abort an in-flight scan and forget it; stale rows cannot land after this."""
+        if self._search_token is not None:
+            self._search_token.cancel()
+        self._search_token = None
+        self._search_running = False
+
+    def _abandon_search(self) -> None:
+        """End this panel's search state without rebuilding the table.
+
+        Used by callers that rebuild immediately after anyway (navigation,
+        reload): cancelling + clearing is enough, the plain listing is not
+        drawn twice in one turn.
+
+        The search generation also advances here: a scan that already walked
+        the tree and queued its :meth:`_apply_search` delivery just before
+        this abandon is otherwise still guarded by the *captured* mode, query
+        and root -- all of which still match -- so only the generation check
+        can drop its late delivery. A search started after this abandon never
+        sees the bump: generation is monotonic and each new scan captures it
+        when it begins.
+        """
+        self._stop_search_timer()
+        self._cancel_scan()
+        self._search_generation += 1
+        self._search_rows = []
+        self._search_view = False
+        self._search_capped = False
+
+    def clear_search_results(self) -> None:
+        """Cancel this search and restore the plain listing, in place.
+
+        This is the restore path everything converges on: ``Escape``, a
+        query dropped below the two-character floor, ``/`` re-selecting
+        Filter. The listing is rebuilt at the scroll position the search left
+        behind; the bar itself stays where it is.
+        """
+        self._abandon_search()
+        if self.is_mounted:
+            self.show_range(self.view_offset, self.cursor_index, force=True)
+
+    def close_search(self) -> None:
+        """Leave the search entirely (AC5): restore the listing, hide the bar."""
+        self.clear_search_results()
+        self._search_root = None
+        page = self.page
+        if page.is_ready and page.active is self:
+            page.hide_filter()
+
+    def _stop_search_timer(self) -> None:
+        """Drop a pending debounced scan, if one was scheduled."""
+        if self._search_timer is not None:
+            self._search_timer.stop()
+            self._search_timer = None
+
+    def _open_search_hit(self, hit: SearchHit | None) -> None:
+        """``enter`` on a search row: navigate a directory, view a file (AC6).
+
+        A directory hit navigates -- which is a directory change, so the
+        search view leaves with it and the new listing unfiltered. A file hit
+        gets the F3 view; a content hit gets the F3 view with the matched
+        line centred, drawn as pure numbered text so the hit's line number
+        addresses real lines. The bar is sent away first, so the keyboard
+        belongs to the viewer/listing again.
+        """
+        if hit is None:
+            return
+        page = self.page
+        entry = hit.entry
+        self.cancel_double_enter()
+        if page.is_ready and page.active is self and page.filter_input.display:
+            page.hide_filter()
+        if entry.is_dir:
+            self.go_to(entry.path)
+            return
+        page.open_view_at(entry.path, line=hit.line if hit.is_content else 0)
 
     def cycle_sort(self) -> None:
         """Toggle the sort key through name/size/time/type."""
@@ -700,10 +1106,25 @@ class FilePanel(Vertical):
         Entering a directory drops the filter-as-you-type state (FR-104), so the
         new listing starts unfiltered. Only this panel is reset: the other pane
         keeps whatever filter it was showing.
+
+        A search of this panel dies with the directory change (AC5): its scan
+        is cancelled, its hits are dropped, and -- once the panel was engaged
+        with a scan mode -- the shared bar goes away too, leaving a plain
+        new-directory listing behind.
         """
         self.directory = Path(path)
+        # A pending double-enter belongs to the previous directory: the new
+        # listing starts on another row, so nothing may launch here (AC5).
+        self.cancel_double_enter()
         # Marks belong to the directory they were made in.
         self._selected.clear()
+        # So does the search (its root moved away from underneath it).
+        if self.searching or self.search_mode in RECURSIVE_MODES:
+            self._abandon_search()
+            self._search_root = None
+            page = self.page
+            if page.is_ready and page.active is self and page.filter_input.display:
+                page.hide_filter()
         # So does the filter.
         self.clear_filter()
         self.reload()
@@ -769,6 +1190,8 @@ class FilePanel(Vertical):
             return None
         if entry is None or entry.is_parent:
             return None
+        if self._search_view:
+            return None
         if entry.path in self._selected:
             self._selected.discard(entry.path)
         else:
@@ -778,7 +1201,14 @@ class FilePanel(Vertical):
         return entry
 
     def select_all(self) -> int:
-        """Mark every visible entry; return how many are marked now."""
+        """Mark every visible entry; return how many are marked now.
+
+        In search view the rows are read-only results (DC-037 AC7), so
+        nothing is marked at all: batch operations keep acting on real
+        listing rows only.
+        """
+        if self._search_view:
+            return 0
         self._selected = {entry.path for entry in self.visible_entries if not entry.is_parent}
         self.update_breadcrumb()
         return self.selected_count
@@ -790,6 +1220,8 @@ class FilePanel(Vertical):
 
     def invert_selection(self) -> int:
         """Swap marked and unmarked; return how many are marked now."""
+        if self._search_view:
+            return 0
         self._selected = {
             entry.path for entry in self.visible_entries if not entry.is_parent
         } - self._selected
@@ -998,7 +1430,17 @@ class FilePanel(Vertical):
         self.breadcrumb.update(self.breadcrumb_text())
 
     def listing_marker(self) -> str:
-        """Short status shown after the path: loading, whole listing or window."""
+        """Short status shown after the path: loading, hits, or the window."""
+        if self._search_running:
+            return "searching\u2026"
+        if self._search_view:
+            count = len(self._search_rows)
+            if count == 0:
+                return "no matches"
+            if self._search_capped:
+                return f"showing the first {search.SEARCH_RESULT_LIMIT} matches"
+            noun = "match" if count == 1 else "matches"
+            return f"{count} {noun}"
         if self.loading:
             return "loading..."
         if self.window_size >= self.total_count:
@@ -1039,20 +1481,46 @@ class FilePanel(Vertical):
 
     @on(DataTable.RowSelected, "DataTable")
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        """``enter`` on a row: a directory (or ``..``) is entered, a file is viewed.
+        """``enter`` on a row: a directory is entered, a file is viewed.
+
+        In search view the row is a hit, not a directory entry (DC-037): a
+        directory hit navigates, a file hit opens the internal viewer exactly
+        as ``f3`` would, and a content hit opens it centred on the matched
+        line. The double-enter gesture stays a *listing* gesture and is never
+        armed from a result row, whose ``enter`` is a read-only view.
+
+        A second ``enter`` on a *listing* row opens the file in the OS default
+        viewer -- the same confirmed launch a non-text file gets from ``f3`` --
+        so a huge or awkward file is one gesture away from its native
+        application.
 
         The selector is the widget type, not ``#table-*``: an id selector in
         Textual is an exact match, and the handler already only ever sees the
         rows of its own panel.
         """
         event.stop()
+        if self._search_view:
+            self._open_search_hit(self.selected_hit())
+            return
         entry = self.cursor_entry()
         if entry is None:
             return
         if entry.is_dir:
+            self.cancel_double_enter()
             self.enter_selected()
-        else:
-            self.page.open_view()
+            return
+        now = monotonic()
+        previous = self._last_enter
+        if (
+            previous is not None
+            and previous[0] == entry.path
+            and now - previous[1] <= DOUBLE_ENTER_TIMEOUT
+        ):
+            self.cancel_double_enter()
+            self.page.open_external()
+            return
+        self._last_enter = (entry.path, now)
+        self.page.open_view()
 
 
 class FilesPage(Vertical):
@@ -1084,21 +1552,37 @@ class FilesPage(Vertical):
         Binding("f8", "delete", "Delete", show=True, id="delete"),
         Binding("shift+f8", "delete_permanent", "Wipe", show=False, id="delete_permanent"),
         # Viewing keys stay palette-only; the viewer header repeats them while
-        # one is open.
+        # one is open. They are ``priority`` for the same reason the panel's
+        # cursor keys are: the focused DataTable inherits ScrollableContainer's
+        # ``ctrl+pageup``/``ctrl+pagedown`` (horizontal table scroll), which would
+        # otherwise swallow the viewer's page keys before FilesPage sees them.
         Binding("f3", "view", "View", show=False, id="view"),
         Binding("alt+enter", "properties", "Info", show=False, id="properties"),
         Binding("f4", "edit", "Edit", show=False, id="edit"),
         Binding("ctrl+c", "copy_property", "Copy field", show=False, id="copy_property"),
         Binding("ctrl+g", "next_match", "Next match", show=False, id="next_match"),
-        Binding("ctrl+f", "search_viewer", "Find", show=False, id="search_viewer"),
-        Binding("ctrl+up", "viewer_up", "Viewer up", show=False, id="viewer_up"),
-        Binding("ctrl+down", "viewer_down", "Viewer down", show=False, id="viewer_down"),
-        Binding("ctrl+pageup", "viewer_page_up", "Viewer page up", show=False, id="viewer_page_up"),
+        # DC-037: ``ctrl+f`` always rolls the Files search modes; the viewer
+        # find box moved to ``f2`` and ``ctrl+g`` still walks its matches.
+        Binding("ctrl+f", "cycle_search", "Search modes", show=False, id="cycle_search"),
+        Binding("f2", "search_viewer", "Find", show=False, id="search_viewer"),
+        Binding("ctrl+up", "viewer_up", "Viewer up", show=False, priority=True, id="viewer_up"),
+        Binding(
+            "ctrl+down", "viewer_down", "Viewer down", show=False, priority=True, id="viewer_down"
+        ),
+        Binding(
+            "ctrl+pageup",
+            "viewer_page_up",
+            "Viewer page up",
+            show=False,
+            priority=True,
+            id="viewer_page_up",
+        ),
         Binding(
             "ctrl+pagedown",
             "viewer_page_down",
             "Viewer page down",
             show=False,
+            priority=True,
             id="viewer_page_down",
         ),
         Binding("escape", "close_viewer", "Close viewer", show=False, id="close_viewer"),
@@ -1128,12 +1612,25 @@ class FilesPage(Vertical):
         self._suppress_filter_change = False
         super().__init__(id="files-page")
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
+        """Keep the viewer keys from eating the listing's keys when nothing is open.
+
+        The four viewer bindings are ``priority`` so the focused ``DataTable``
+        cannot shadow them (see ``BINDINGS``). With no viewer mounted there is
+        nothing to scroll, and consuming the key would break the table's own
+        ``ctrl+pageup``/``ctrl+pagedown`` horizontal paging.
+        """
+        del parameters
+        if action in VIEWER_ACTIONS and self.viewer is None:
+            return False
+        return True
+
     # -- queries -----------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         """The filter input plus the two side-by-side panels."""
         self._panels = {name: FilePanel(name, self.start_path) for name in PANEL_NAMES}
-        yield Input(placeholder="Filter\u2026", id="files-filter")
+        yield Input(placeholder=file_table.search_placeholder("filter"), id="files-filter")
         yield Horizontal(*self._panels.values(), classes="files-panes")
 
     def on_mount(self) -> None:
@@ -1204,15 +1701,54 @@ class FilesPage(Vertical):
             is_active = panel.panel_name == self.active_panel
             panel.set_class(is_active, "active")
             panel.set_class(not is_active, "inactive")
+        self.sync_search_placeholder()
         self.active.focus_table()
+
+    def sync_search_placeholder(self) -> None:
+        """Name the active panel's search mode in the shared bar (DC-037 AC1).
+
+        The bar is shared, so its placeholder is the one place the mode can
+        always be read from: ``Filter\u2026``, ``Recursive search\u2026`` or
+        ``Content search\u2026`` follows the active panel's mode.
+
+        The same engaged mode is what the app footer's compact search hint
+        names, and every call site here has just changed the mode, closed the
+        search or switched panes -- exactly the moments the footer hint is
+        asked to follow -- so the hints are re-rendered alongside the bar.
+        """
+        if not self.is_ready:
+            return
+        self.filter_input.placeholder = file_table.search_placeholder(self.active.search_mode)
+        self.app.refresh_hints()
 
     def set_active_panel(self, name: str) -> None:
         """Make ``name`` the active panel; unknown names are rejected."""
         if name not in PANEL_NAMES:
             raise ValueError(f"unknown panel: {name!r}")
         if name != self.active_panel:
+            # The ``enter`` target follows the active panel, so switching
+            # panes breaks the "second enter on the same file" premise: drop
+            # the pending gesture in both panels so nothing can launch (AC5).
+            for panel in self.panels:
+                panel.cancel_double_enter()
             self.active_panel = name
         else:
+            self.sync_active()
+        # The bar mirrors only the active pane: its placeholder follows the new
+        # panel's mode (sync_active), and when that pane is engaged with a
+        # scan-mode search the bar carries that panel's query too -- the bar
+        # must not present one pane's query with another pane's results. The
+        # change message this can produce is suppressed; the panel's query is
+        # already what the bar now says.
+        new_active = self.panel(self.active_panel)
+        query = new_active.search_query
+        if (
+            new_active.search_mode in RECURSIVE_MODES
+            and new_active.searching
+            and self.filter_input.value != query
+        ):
+            self._suppress_filter_change = True
+            self.filter_input.value = query
             self.sync_active()
         # The active pane is the one the header reports a path for, so a switch
         # moves that path even though no directory changed.
@@ -1250,9 +1786,27 @@ class FilesPage(Vertical):
             self.active.focus_parent()
 
     def action_start_filter(self) -> None:
-        """``/``: reveal the filter input and focus it."""
-        if not self._filter_has_focus():
-            self.show_filter()
+        """``/``: open the bar in Filter mode -- always (FR-104, DC-037 AC1).
+
+        A panel engaged with a scanning mode comes back to Filter first: any
+        scan is cancelled, any hits are dropped, the plain listing returns,
+        and filter-as-you-type then works over it exactly as before.
+        """
+        if self._filter_has_focus():
+            return
+        self.active.use_filter_mode()
+        self.sync_search_placeholder()
+        self.show_filter()
+
+    def action_cycle_search(self) -> None:
+        """``ctrl+f``: roll the active panel through the search modes (DC-037 AC1).
+
+        Always cycles: whatever is focused inside the page -- listing, bar,
+        even with a viewer open -- the next press moves Filter → Recursive →
+        Content → Filter, opens the bar, keeps the query and re-runs the
+        new mode. The viewer find box lives on ``f2`` now.
+        """
+        self.active.cycle_search()
 
     def action_cycle_sort(self) -> None:
         """``ctrl+s``: cycle the active panel through name/size/time/type sorting."""
@@ -1385,21 +1939,68 @@ class FilesPage(Vertical):
         if entry.is_dir:
             self.notify("browse a directory, or put the cursor on a file", severity="warning")
             return None
-        kind = self.manager.view_kind(entry.path)
+        return self.open_view_at(entry.path)
+
+    def open_view_at(self, path: Path, *, line: int = 0) -> Path | None:
+        """Show ``path`` in the internal viewer, optionally centred on ``line``.
+
+        This is the one shared open path for both entry sources -- the cursor
+        row and a search hit (DC-037) -- with the same rules as
+        :meth:`open_view`: into the *inactive* pane, never a screen, binaries
+        confirmed into the OS viewer first.
+
+        With a ``line`` (a content hit) the document is opened as pure
+        numbered text: a hit's line number addresses the file's real lines,
+        which a reflowed Markdown/JSON render cannot name -- so that view is
+        verbatim, like YAML -- and the viewer is asked to centre the matched
+        line the moment the document lands, without re-reading anything.
+        """
+        kind = self.manager.view_kind(path)
         if kind == "binary":
-            self.prompt_launch(self.manager.describe_open(entry.path))
+            self.prompt_launch(self.manager.describe_open(path))
             return None
         target = self.inactive
         self._clear_other_viewers(target)
-        self._view_target = entry.path
-        target.mount_viewer(ViewerPanel(entry.path, manager=self.manager, kind=kind))
-        return entry.path
+        self._view_target = path
+        viewer = ViewerPanel(path, manager=self.manager, kind="text" if line else kind)
+        target.mount_viewer(viewer)
+        if line:
+            viewer.open_at_line(line)
+        return path
 
-    def open_properties(self) -> Path | None:
-        """Show the detail/properties view for the entry under the cursor (AC6)."""
+    def open_external(self) -> Path | None:
+        """Hand the entry under the cursor to the OS default application.
+
+        Reached by a double ``enter`` on a file, including a plain-text one that
+        the single ``enter`` already opened in the internal viewer. It is the
+        same confirmed launch as ``f3`` on a binary file (DC-006/FR-403), so
+        nothing opens without naming the target and the application first.
+        """
         entry = self.target_entry()
         if entry is None:
             return None
+        if entry.is_dir:
+            self.notify("browse a directory, or put the cursor on a file", severity="warning")
+            return None
+        self.prompt_launch(self.manager.describe_open(entry.path))
+        return entry.path
+
+    def open_properties(self) -> Path | None:
+        """Show the detail/properties view for the entry under the cursor (AC6).
+
+        The properties table replaces the mounted viewer, so it ends the
+        pending double-enter gesture too (AC5): the view the gesture was armed
+        against is gone, and a fast second ``enter`` after ``alt+enter`` must
+        only re-open the internal viewer, never launch anything.
+        """
+        entry = self.target_entry()
+        if entry is None:
+            return None
+        # The armed gesture can live in either panel -- the properties view
+        # replaces the inactive pane's viewer and empties the other panes -- so
+        # drop it in every panel, like ``clear_viewers`` does.
+        for panel in self.panels:
+            panel.cancel_double_enter()
         target = self.inactive
         self._clear_other_viewers(target)
         self._view_target = entry.path
@@ -1409,6 +2010,7 @@ class FilesPage(Vertical):
     def clear_viewers(self) -> None:
         """Empty every mount point and forget the view target."""
         for panel in self.panels:
+            panel.cancel_double_enter()
             panel.clear_viewer()
         self._view_target = None
 
@@ -1481,8 +2083,9 @@ class FilesPage(Vertical):
 
         The launch is wired into the answer callback and nowhere else, so a
         declined dialog cannot have opened anything -- that is the property the
-        card's risk is about, and it is why nothing in this page calls
-        ``open_external`` or ``open_link`` directly.
+        card's risk is about, and it is why a path reaches the OS only through
+        this confirmation, whether it came from ``f3`` on a binary file or a
+        double ``enter`` on any file.
         """
         self.app.push_screen(
             LaunchScreen(request),
@@ -1546,23 +2149,16 @@ class FilesPage(Vertical):
     def _scroll_viewer(self, lines: int, pages: int = 0) -> None:
         """Move the viewer by ``lines`` lines or ``pages`` screenfuls.
 
-        A rendered Markdown body scrolls itself; every other kind scrolls the
-        viewer's own window, so a file of any size moves without being read.
+        Every inline kind -- Markdown included -- scrolls its body natively, so
+        there is one code path whether the body holds rendered Markdown or a
+        numbered document.
         """
         viewer = self.viewer
         if viewer is None:
             return
         if pages:
             lines = pages * viewer.window_rows
-        if not viewer.is_rendered:
-            viewer.scroll_lines(lines)
-            return
-        body = viewer.body
-        for _ in range(abs(lines)):
-            if lines > 0:
-                body.scroll_down(animate=False)
-            else:
-                body.scroll_up(animate=False)
+        viewer.scroll_lines(lines)
 
     def action_view(self) -> None:
         """``f3``: open the internal viewer in the inactive panel."""
@@ -1580,17 +2176,32 @@ class FilesPage(Vertical):
             self.edit_target()
 
     def action_close_viewer(self) -> None:
-        """``escape``: drop the find box, else empty the mount points.
+        """``escape``: leave the innermost layer that is open (AC5, DC-037).
 
-        The find box is the innermost layer, so the first escape throws it away
-        and the second one leaves the file. A stray escape never loses the file
-        you were reading.
+        From the inside out: a scan-mode search bar (a running scan cancels,
+        the plain listing returns, the bar hides); the viewer's find box (the
+        first escape throws it away); the mounted file itself (the second
+        empties the mount points); and only then a search hit view with no
+        viewer over it (scan cancelled, plain listing restored, bar hidden).
+        A stray escape never loses the file you were reading.
+
+        In Filter mode the bar keeps its long-standing behavior: Escape does
+        nothing to the filter the user is reviewing.
         """
+        active = self.active
         if self._filter_has_focus():
+            if active.searching or active.search_mode in RECURSIVE_MODES:
+                active.close_search()
             return
         viewer = self.viewer
-        if isinstance(viewer, ViewerPanel) and viewer.search_open:
-            viewer.close_search()
+        if viewer is not None:
+            if viewer.search_open:
+                viewer.close_search()
+                return
+            self.clear_viewers()
+            return
+        if active.searching:
+            active.close_search()
             return
         self.clear_viewers()
 
@@ -1606,17 +2217,36 @@ class FilesPage(Vertical):
         return self.panel(name) if name else self.inactive
 
     def action_previous_tab(self) -> None:
-        """``ctrl+left``: move the viewer pane's tabsheet one tab back (DC-010, AC6)."""
+        """``ctrl+left``: move the viewer pane's tabsheet one tab back (DC-010, AC6).
+
+        The gesture is armed on the panel the ``enter`` happened in, while the
+        tabsheet it hides the viewer with moves in the viewer's own pane, so
+        the page drops the pending double-enter gesture in *both* panels (AC5)
+        before switching: a fast second enter must only re-open the viewer.
+        """
         if not self._filter_has_focus():
+            for panel in self.panels:
+                panel.cancel_double_enter()
             self.tab_panel().previous_tab()
 
     def action_next_tab(self) -> None:
-        """``ctrl+right``: move the viewer pane's tabsheet one tab forward (DC-010, AC6)."""
+        """``ctrl+right``: move the viewer pane's tabsheet one tab forward (DC-010, AC6).
+
+        Same reason as :meth:`action_previous_tab`: switching tabs can hide the
+        viewer, so every pending double-enter gesture is dropped first (AC5).
+        """
         if not self._filter_has_focus():
+            for panel in self.panels:
+                panel.cancel_double_enter()
             self.tab_panel().next_tab()
 
     def action_search_viewer(self) -> None:
-        """``ctrl+f``: search inside the mounted viewer."""
+        """``f2``: search inside the mounted viewer.
+
+        ``Ctrl+F`` is the Files search modes' cycling key since DC-037, so
+        the viewer's own find box moved to ``F2`` (``Ctrl+G`` still walks its
+        matches, AC8 of DC-037).
+        """
         if not self._filter_has_focus():
             viewer = self.viewer
             if viewer is not None:
@@ -1672,7 +2302,13 @@ class FilesPage(Vertical):
 
     @on(Input.Changed, "#files-filter")
     def on_filter_changed(self, event: Input.Changed) -> None:
-        """Filter-as-you-type: narrow the rows of the active panel."""
+        """Route what was typed to the active panel's search mode (DC-037).
+
+        ``filter`` narrows the current listing as before, immediately; the two
+        scanning modes record the query on the panel and re-schedule their
+        debounced scan. Either way the input itself stays the single source
+        the user wrote into; the panel decides what that text does.
+        """
         event.stop()
         if self._suppress_filter_change:
             # This change is the ``clear_filter()`` reset from a navigation:
@@ -1681,10 +2317,21 @@ class FilesPage(Vertical):
             # race that scan. Swallow the message and re-arm the handler.
             self._suppress_filter_change = False
             return
-        self.active.set_filter(event.value)
+        panel = self.active
+        if panel.search_mode in RECURSIVE_MODES:
+            panel.set_search_query(event.value)
+            return
+        panel.set_filter(event.value)
 
     @on(Input.Submitted, "#files-filter")
     def on_filter_submitted(self, event: Input.Submitted) -> None:
-        """Return focus to the active panel when the filter is confirmed."""
+        """Confirm the search bar: back to the panel, cursor on the top row.
+
+        In a scanning mode that lands the cursor on the first hit, so the next
+        ``enter`` opens it (DC-037 AC6); in Filter mode it lands on the first
+        narrowed listing row, as it always did.
+        """
         event.stop()
         self.hide_filter()
+        if self.active.search_active:
+            self.active.move_cursor(0)

@@ -5,6 +5,84 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-25
+
+Terminal page navigation and three-mode Files search, on top of the File types
+tab and the bounded native viewer delivered since 1.2.0.
+
+### Added
+
+- **Files search modes** — the search bar (`Ctrl+F`, or `/` for Filter) rolls
+  through three modes while keeping the typed query: **Filter** (the
+  current-directory name filter), **Recursive** (case-insensitive name
+  matches anywhere below the active pane's directory) and **Content**
+  (case-insensitive text matches inside those files). Recursive/content scans
+  are debounced by 250 ms, need two-or-more characters, run on a worker
+  thread and are cancellable: a newer query or move, `Escape` or an empty
+  query restores the plain listing. Name hits render as paths relative to the
+  pane directory; content hits render as `relative/path:line` with a ≤200-char
+  snippet, and `Enter` opens the internal viewer centred on the matched line.
+  Scans stop at 2,000 results (the search bar reports the cap), never read
+  files larger than 1 MiB, skip binary files (NUL byte in the first 8 KiB) and
+  never descend directory symlinks, so a symlink loop cannot hang a search.
+  Changing the hidden-files toggle re-runs the search that is on screen, and
+  result rows are read-only: sort and batch operations keep acting on real
+  listing rows only.
+- **File types tab** (`Ctrl+7`) — ranks the active pane's tree by file
+  extension: summary cards for files / distinct types / scan time, and a
+  top-20 bar chart that folds extensionless files into a `(none)` row. It
+  reuses the Stats worker scan and its entry cap, caches results per
+  directory, follows the active pane while it is visible, and refreshes with
+  `Ctrl+R`.
+- Double `Enter` on a file opens it in the OS default application (with the
+  same confirmation as any external launch), including plain-text files that a
+  single `Enter` shows in the internal viewer.
+
+### Changed
+
+- The viewer find box moved from `Ctrl+F` to `F2`; `Ctrl+F` now always cycles
+  the Files search modes (above), and `Ctrl+G` still walks the find box's
+  matches.
+- The standalone `python -m daylight.filetype_dashboard` proof-of-concept is
+  replaced by the in-app tab; the ranking rules stay in
+  `managers/filetypes.py`, so they are unit-testable without a UI.
+- The viewer reads every inline kind — Markdown, JSON, YAML and source text —
+  whole, bounded by a 1 MiB / 10,000-line `VIEW_LIMIT`, and mounts it in the
+  same native `VerticalScroll` Markdown already used. Mouse wheel, scrollbar,
+  the viewer keys and find jumps all move one scroll position, and a resize no
+  longer re-reads or re-windows the file. In the Files pane the body also takes
+  arrow/page keys once Tab focuses it. Files above either limit show their first
+  1 MiB / 10,000 lines with a notice.
+- Search jumps to matches in every document; match highlighting is painted for
+  documents up to 2,000 lines, and the status line says when it is off so a long
+  file never silently loses the highlight.
+- The viewer's `Ctrl+Up` / `Ctrl+Down` / `Ctrl+PageUp` / `Ctrl+PageDown`
+  bindings are `priority` when a viewer is open, so the focused listing's
+  `DataTable` no longer swallows the page keys with its horizontal scroll
+  bindings. With no viewer open the keys fall through to the table again.
+- Source lines are rendered with `text-wrap: nowrap` and `text-overflow:
+  ellipsis`, so the gutter stays aligned and the document's height equals its
+  line count.
+
+### Fixed
+
+- Every page is now reachable in macOS Terminal.app, which never transmits
+  `Ctrl+1`…`Ctrl+7`: `Ctrl+N` walks to the next page tab and `Ctrl+B` to
+  the previous one, wrapping at either end (palette entries "Next tab" /
+  "Previous tab", both rebindable on the Settings page like every action). The
+  digit shortcuts still work in terminals that do send them.
+- Long Java and other source files no longer appear stuck in the viewer: their
+  page keys, mouse wheel and scrollbar work exactly like Markdown's.
+
+### Notes
+
+- Gates for this release: `uv run ruff check .` clean and `uv run pytest -q` —
+  884 passed, including 16 UI snapshots.
+- Post-run Evaluator+ returned **PASS** (DC-EVAL-007) in legacy PRD mode; the
+  frozen PRD Revision 6 and ADR were not modified.
+- `DC-033` (unused sandbox/preview cleanup) remains deferred by the owner and
+  preserved in `stash@{0}`; no user-visible behaviour depends on it.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added

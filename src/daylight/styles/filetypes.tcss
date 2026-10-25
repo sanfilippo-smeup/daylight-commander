@@ -1,9 +1,11 @@
-/* Standalone file-type dashboard: summary cards and one bar chart.
-   Colors arrive as $name variables from daylight.themes.get_css_variables(). */
+/* File types tab (DC-034): title, summary cards and one bar chart.
+   Colors arrive as $name variables from daylight.themes.get_css_variables();
+   no color literal here. Summary cards and the chart are shared components, so
+   their box styling lives with the Stats tab in stats.tcss. */
 
-Screen {
-    background: $background;
-    color: $foreground;
+#filetypes-page {
+    height: 1fr;
+    padding: 0 1;
 }
 
 #filetypes-title {
@@ -14,26 +16,6 @@ Screen {
     text-style: bold;
 }
 
-.stats-summary {
-    height: auto;
-}
-
-.summary-card {
-    width: 1fr;
-    height: 5;
-    background: $panel;
-    border: round $accent;
-    padding: 0 1;
-}
-
 #filetypes-scroll {
     height: 1fr;
-}
-
-.chart {
-    width: 1fr;
-    height: auto;
-    background: $panel;
-    border: round $accent;
-    padding: 0 1;
 }

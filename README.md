@@ -19,10 +19,20 @@ application.
 
 - **Dual-pane listing** — two independent directory panes with cursor
   navigation, type-ahead jumping, and hidden-file filtering (`/`).
+- **File search modes** — the Files search bar (`Ctrl+F` or `/`) has three
+  modes: **Filter** matches names in the current directory, **Recursive**
+  matches names anywhere under the pane's directory, and **Content** matches
+  text inside files under it. `Ctrl+F` rolls between the modes keeping the
+  query; each scan is debounced, runs on a worker thread, honours the
+  hidden-files toggle, skips binary and oversized files, and stops at the
+  2,000-hit cap. `Enter` opens a hit: directories navigate, files open in the
+  internal viewer, and content hits land centred on the matched line.
 - **File operations** — copy, move, rename, delete to trash, permanent wipe,
   new file, and new directory, all with confirmation dialogs.
 - **Format-aware viewer** — inspect files in a viewer with pretty-printed
-  JSON, line counts, and a find function; keep two viewer tabs open at once.
+  JSON, line counts, and a find function; long files scroll natively (mouse
+  wheel, scrollbar, or the viewer keys) up to a 1 MiB / 10,000-line inline
+  limit, and a double `Enter` hands the file to the OS default application.
 - **Sortable columns** — cycle sort keys and reverse the order on demand.
 - **Command palette** — every action is reachable from the palette; the
   palette and the key footer are generated from the same binding table, so
@@ -34,6 +44,11 @@ application.
   pane's directory: total size and counts, disk usage by content category,
   top extensions, a modification calendar heatmap, a size histogram,
   permission masks, and the largest / oldest / newest files.
+- **File types tab** — a `Ctrl+7` tab that ranks the active pane's whole tree
+  by extension: file / type / scan-time summary cards plus a top-20 bar chart,
+  with extensionless files folded into a `(none)` row. It reuses the Stats
+  worker scan and its 200k-entry safety cap, caches per directory, follows the
+  active pane while visible, and refreshes with `Ctrl+R`.
 - **AI dashboard builder** — a `Ctrl+6` Builder tab where you describe a
   dashboard in natural language; an embedded `opencode` agent returns one
   declarative dashboard specification (a fenced JSON block, with clarifying
@@ -68,13 +83,13 @@ Then run `daylight`.
 
 ### Option 2 — install from a release asset
 
-Download `daylight_commander-1.2.0-py3-none-any.whl` from the
+Download `daylight_commander-1.3.0-py3-none-any.whl` from the
 [latest release](https://github.com/sanfilippo-smeup/daylight-commander/releases/latest), then:
 
 ```bash
-uv tool install ./daylight_commander-1.2.0-py3-none-any.whl
+uv tool install ./daylight_commander-1.3.0-py3-none-any.whl
 # or
-pip install ./daylight_commander-1.2.0-py3-none-any.whl
+pip install ./daylight_commander-1.3.0-py3-none-any.whl
 ```
 
 ### Option 3 — build from a source checkout
@@ -84,7 +99,7 @@ Clone the repository, then build or install locally:
 ```bash
 git clone https://github.com/sanfilippo-smeup/daylight-commander.git
 cd daylight-commander
-uv build              # → dist/daylight_commander-1.2.0-py3-none-any.whl + .tar.gz
+uv build              # → dist/daylight_commander-1.3.0-py3-none-any.whl + .tar.gz
 uv tool install .     # install the local package as a tool
 ```
 
@@ -107,8 +122,8 @@ The TUI opens with two directory panes. Move the cursor with the arrow keys,
 press `Ctrl+T` to switch panes, and use the F-keys below for file
 operations. Press `Ctrl+P` for the command palette; every
 page (Files `Ctrl+1`, Viewers `Ctrl+2`, Properties `Ctrl+3`, Settings `Ctrl+4`,
-Stats `Ctrl+5`, Builder `Ctrl+6`, plus the dynamic Dashboard tab) is also
-reachable from the palette and its tab.
+Stats `Ctrl+5`, Builder `Ctrl+6`, File types `Ctrl+7`, plus the dynamic
+Dashboard tab) is also reachable from the palette and its tab.
 
 ## Keybindings
 
@@ -125,18 +140,40 @@ reachable from the palette and its tab.
 | `Shift+F8` | Wipe (delete permanently) |
 | `F9` | Open link externally (URL under the cursor, with confirmation) |
 | `Alt+Enter` | File properties |
+| `Enter` twice | Open the file in the OS default application (with confirmation) |
+| `Ctrl+↑` / `Ctrl+↓` | Scroll the viewer one line |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Scroll the viewer one screen |
+| `Ctrl+F` | Cycle the Files search modes: Filter → Recursive → Content (query kept) |
+| `F2` | Find inside the viewer |
 | `Ctrl+S` | Cycle sort column |
 | `Ctrl+R` | Reverse sort order |
+| `Ctrl+N` / `Ctrl+B` | Next tab / previous tab (wraps at either end) |
 | `Ctrl+C` | Copy field (properties page) |
-| `Ctrl+G` | Next match (viewer find) |
+| `Ctrl+G` | Viewer find: next match |
 | `Ctrl+P` | Command palette |
 | `Ctrl+T` | Switch pane |
 | `Ctrl+Q` | Quit |
 
 Navigation extras: arrows move the cursor, `Backspace` highlights the `..`
 parent row (press `Enter` to ascend),
-`/` starts a filter, `Space` selects, `Ctrl+A` selects all, and `Escape`
-closes the viewer.
+`/` opens the search bar in Filter mode, `Space` selects, `Ctrl+A` selects
+all, and `Escape`
+closes the viewer (and first unwinds a recursion/content search, restoring
+the plain listing; `Ctrl+F` re-opens the search bar and rolls its mode). The
+recursive and content scans only run for two-or-more characters and stop
+after 2,000 hits or files larger than 1 MiB; binary files (a NUL byte in the
+first 8 KiB) are never read. The viewer scroll keys above belong to the Files
+page; on
+the full-page Viewers tab (`Ctrl+2`) the body scrolls with the usual wheel, or
+with arrows/`PageDown` after `Tab` focuses it.
+
+> **Using Terminal.app on macOS?** Terminal.app does not transmit `Ctrl+1` …
+> `Ctrl+7`, so the digit shortcuts arrive as nothing at all. That is what
+> `Ctrl+N` (next tab) and `Ctrl+B` (previous tab) are for: they walk the
+> same page tabs in order and wrap at either end, in any terminal. The digit
+> keys keep working where the terminal does send them, and every binding —
+> these included — can be rebound on the Settings tab (open it from the
+> palette with `Ctrl+P`).
 
 ## Configuration
 

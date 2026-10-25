@@ -18,11 +18,12 @@ import pytest
 from textual.binding import Binding
 from textual.fuzzy import Matcher
 from textual.pilot import Pilot
-from textual.widgets import OptionList, Static, Tabs
+from textual.widgets import Input, OptionList, Static, Tabs
 
 from daylight import themes
 from daylight.app import PAGE_LABELS, DaylightApp
 from daylight.components.command_palette import DaylightCommandProvider
+from daylight.components.modules.dashboard_page import DashboardPage
 from daylight.components.modules.file_list import FilesPage
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.properties_view import PropertiesView
@@ -30,13 +31,21 @@ from daylight.components.modules.settings_page import SettingsPage
 from daylight.components.modules.viewers_page import ViewersPage
 from daylight.components.shell import HINT_SEPARATOR, format_hints, format_key
 from daylight.managers import ConfigManager, FileManager
-from daylight.models import AppConfig
+from daylight.models import AppConfig, DashboardBlock, DashboardSpec
 
 #: Generous ceiling: worker threads and the window rebuild need a few turns.
 SETTLE = 60
 
 #: Terminal size used for every pilot scenario.
 SIZE = (120, 40)
+
+#: A minimal dashboard for the DC-036 tab-walk scenarios: the walk cares about
+#: the tab and its page being mounted, not about what the dashboard shows.
+NAV_DASH_SPEC = DashboardSpec(
+    schema_version=1,
+    title="Cycle dashboard",
+    blocks=(DashboardBlock(kind="summary_cards", source="summary"),),
+)
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 
@@ -273,9 +282,7 @@ async def test_clearing_the_palette_query_offers_every_command() -> None:
     """An empty query means "everything", which is what an emptied palette asks for."""
     app = make_app()
     listed = [hit async for hit in DaylightCommandProvider(app).search("")]
-    assert [hit.display for hit in listed] == [
-        command.name for command in app.palette_commands()
-    ]
+    assert [hit.display for hit in listed] == [command.name for command in app.palette_commands()]
 
 
 def test_the_palette_is_a_registered_command_provider() -> None:
@@ -497,6 +504,144 @@ async def test_the_settings_tab_lists_the_themes_and_takes_the_keyboard(tree: Pa
         assert settings.selected_theme == app.app_config.theme
 
 
+# -- DC-036: the portable tab walk (ctrl+n / ctrl+b) -------------------------
+
+
+@run_async
+async def test_ctrl_n_visits_every_tab_in_strip_order_and_wraps(tree: Path) -> None:
+    """AC1/AC3: no dashboard open, the walk covers the seven static tabs once."""
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        for name in list(PAGE_LABELS)[1:]:
+            await pilot.press("ctrl+n")
+            await wait_for(pilot, lambda app, name=name: app.active_page == name)
+        # AC4: the tab highlight, the page and the hints all agree at each stop.
+        assert app.tabs.active == app.active_page
+        assert app.query_one("#filetypes-page").display is True
+        assert app.hints.hint_text() == format_hints(app.key_hints())
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+        assert app.tabs.active == "files"
+
+
+@run_async
+async def test_ctrl_b_walks_backwards_and_wraps_first_to_last(tree: Path) -> None:
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        await pilot.press("ctrl+b")
+        await wait_for(pilot, lambda app: app.active_page == "filetypes")
+        for name in list(PAGE_LABELS)[-2:0:-1]:
+            await pilot.press("ctrl+b")
+            await wait_for(pilot, lambda app, name=name: app.active_page == name)
+        await pilot.press("ctrl+b")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+
+
+@run_async
+async def test_the_walk_pair_returns_to_the_starting_page(tree: Path) -> None:
+    """AC1: one step out and one step back lands where it began."""
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "viewers")
+        await pilot.press("ctrl+b")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+        await pilot.press("ctrl+b")
+        await wait_for(pilot, lambda app: app.active_page == "filetypes")
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+
+
+@run_async
+async def test_the_walk_fires_from_an_input_and_the_viewer_body(tree: Path) -> None:
+    """AC2: app-level keys, never falling through to a page binding.
+
+    The same walk is pressed once with the viewer's body focused (the Viewers
+    tab hands its keyboard to the whole page) and once with the filter input's
+    keystroke pending, so the keys fire whatever is on screen.
+    """
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        page = await wait_for_listing(pilot)
+        page.active.move_cursor(_index_of(page, "notes.md"))
+        page.open_view()
+        await pilot.pause()
+        await pilot.press("ctrl+2")
+        await wait_for(pilot, lambda app: app.active_page == "viewers")
+        await wait_for(pilot, lambda app: app.focused is app.query_one(ViewersPage))
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "properties")
+
+        await pilot.press("ctrl+1")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+        await pilot.press("slash")
+        await wait_for(pilot, lambda app: isinstance(app.focused, Input))
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "viewers")
+        assert app.tabs.active == "viewers"
+
+
+@run_async
+async def test_a_dashboard_tab_joins_the_walk_only_while_open(tree: Path) -> None:
+    """AC3: the dynamic tab is one more stop while it is mounted, none otherwise."""
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        # Without a dashboard the last tab never walks past the first page.
+        await pilot.press("ctrl+7")
+        await wait_for(pilot, lambda app: app.active_page == "filetypes")
+        assert app._live_tab_pages() == list(PAGE_LABELS)
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+
+        # Once a dashboard is opened, its tab is the strip's one dynamic stop.
+        app.open_dashboard(NAV_DASH_SPEC, tree)
+        await wait_for(pilot, lambda app: app.active_page == "dashboard")
+        await wait_for(pilot, lambda app: app._dashboard_is_live())
+        await wait_for(pilot, lambda app: app.tabs.get_tab("dashboard") is not None)
+        assert app._live_tab_pages() == [*PAGE_LABELS, "dashboard"]
+        # Backwards from the dashboard re-enters the static walk at its end.
+        await pilot.press("ctrl+b")
+        await wait_for(pilot, lambda app: app.active_page == "filetypes")
+        assert app.tabs.active == "filetypes"
+        # Forwards from the filetypes tab the dashboard stop is on the way first.
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "dashboard")
+        assert app.tabs.active == "dashboard"
+        assert isinstance(app._pages["dashboard"], DashboardPage)
+        assert app._pages["dashboard"].display is True  # no empty page
+        await pilot.press("ctrl+n")
+        await wait_for(pilot, lambda app: app.active_page == "files")
+        await pilot.press("ctrl+b")
+        await wait_for(pilot, lambda app: app.active_page == "dashboard")
+
+
+@run_async
+async def test_the_palette_offers_next_and_previous_tab_and_runs_them(
+    tree: Path,
+) -> None:
+    """AC5: the exact titles exist and run the same walk actions."""
+    app = make_app(tree)
+    async with app.run_test(size=SIZE) as pilot:
+        await wait_for_listing(pilot)
+        commands = {command.name: command for command in app.palette_commands()}
+        commands["Next tab"].run()
+        await wait_for(pilot, lambda app: app.active_page == "viewers")
+        commands["Previous tab"].run()
+        await wait_for(pilot, lambda app: app.active_page == "files")
+
+
+def test_the_walk_is_a_no_op_before_the_app_composes() -> None:
+    """Fewer than two live tabs: nothing to cycle, nothing to crash."""
+    app = make_app()
+    app.action_next_page()
+    app.action_previous_page()
+    assert app.active_page == "files"
+
+
 # -- AC4: themes switch at runtime and the choice persists ------------------
 
 
@@ -514,9 +659,7 @@ async def test_switching_the_theme_changes_the_published_tokens(tree: Path) -> N
 
 
 @run_async
-async def test_a_theme_switch_is_remembered_for_the_next_run(
-    tree: Path, config_path: Path
-) -> None:
+async def test_a_theme_switch_is_remembered_for_the_next_run(tree: Path, config_path: Path) -> None:
     """AC4 read back from disk, the way the hidden-toggle persistence is tested.
 
     Nothing is carried over in memory: the second app is a different object with

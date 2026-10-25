@@ -12,18 +12,20 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
 import pytest
+from textual.events import MouseScrollDown
 from textual.pilot import Pilot
 from textual.widgets import Input, Markdown
 
 from daylight.app import DaylightApp
 from daylight.components.modules.file_list import FilesPage
 from daylight.components.modules.viewer import ViewerPanel
+from daylight.components.modules.viewers_page import ViewersPage
+from daylight.config import DEFAULT_KEYBINDINGS
 from daylight.managers import ConfigManager, FileManager, content
 from daylight.managers.external import EditDispatch
 from daylight.modals import LaunchScreen
@@ -233,7 +235,7 @@ async def test_markdown_is_rendered_as_markdown(tree: Path, tmp_path: Path) -> N
         viewer = await open_at(pilot, page, "doc.md")
         assert viewer.kind == "markdown"
         assert viewer.is_rendered is True
-        assert viewer.is_windowed is False
+        assert viewer.lines == []
         widget = viewer.markdown_widget
         assert widget is not None and widget.is_mounted
         rendered = {type(node).__name__ for node in widget.walk_children()}
@@ -265,14 +267,12 @@ async def test_json_is_pretty_printed_with_line_numbers(tree: Path, tmp_path: Pa
 
 
 @run_async
-async def test_a_long_json_file_fills_the_viewport_and_reaches_the_last_line(
-    tree: Path, tmp_path: Path
-) -> None:
-    """DC-020: the json window follows the real viewport, never a 24-line cap.
+async def test_a_long_json_file_is_scrollable_to_the_last_line(tree: Path, tmp_path: Path) -> None:
+    """DC-020: the whole json document is mounted and scrolls natively.
 
-    The document is held whole in memory, so the first window must be sized by
-    the pane it lands in -- not by the fallback that applies before the layout
-    has spoken -- and every line must stay reachable, to the very last one.
+    The body must track the real viewport, hold every line, and reach the very
+    last one with the same scroll behaviour Markdown uses -- not by swapping a
+    window, which is what left page keys dead in the past.
     """
     raw = json.dumps({"items": [f"entry {n}" for n in range(1, 81)]})
     (tree / "big.json").write_text(raw, encoding="utf-8")
@@ -285,15 +285,9 @@ async def test_a_long_json_file_fills_the_viewport_and_reaches_the_last_line(
         assert viewer.kind == "json"
         assert viewer.is_rendered is False
         assert expected > SIZE[1]
-        # The full pretty-printed document is held, and the first window is the
-        # pane's real height rather than the fallback it was opened with.
-        for _ in range(SETTLE):
-            await pilot.pause()
-            if viewer.body.size.height and len(viewer.lines) == viewer.body.size.height:
-                break
         assert viewer.line_count == expected
-        assert viewer.window_rows == viewer.body.size.height
-        assert len(viewer.lines) == viewer.window_rows
+        assert len(viewer.lines) == expected
+        assert viewer.body.max_scroll_y == expected - viewer.window_rows
         # Ctrl+Down steps a line; Ctrl+PageDown walks to the very last one.
         page.action_viewer_down()
         await pilot.pause()
@@ -301,50 +295,36 @@ async def test_a_long_json_file_fills_the_viewport_and_reaches_the_last_line(
         for _ in range(6):
             page.action_viewer_page_down()
             await pilot.pause()
-        assert viewer.line_start == expected - 1
-        assert viewer.line_start + len(viewer.lines) == expected
-        assert f"line {expected} of {expected}" in str(viewer.status.content)
+        assert viewer.line_start == expected - viewer.window_rows
+        assert f"line {viewer.line_start + 1} of {expected}" in str(viewer.status.content)
         assert f"{expected:>3}  }}" in str(viewer.text_widget.content)
         # Ctrl+PageUp walks back a screenful.
         page.action_viewer_page_up()
         await pilot.pause()
-        assert viewer.line_start == expected - 1 - viewer.window_rows
-        # Resizing the pane re-renders the window to the new height.
+        assert viewer.line_start == expected - 2 * viewer.window_rows
+        # Resizing shows more of the same mounted document; nothing is re-read.
         tall = viewer.window_rows
         await pilot.resize_terminal(120, 24)
         for _ in range(SETTLE):
             await pilot.pause()
-            if viewer.window_rows < tall and len(viewer.lines) == viewer.window_rows:
+            if viewer.window_rows < tall:
                 break
         assert viewer.window_rows == viewer.body.size.height
-        assert len(viewer.lines) == viewer.window_rows
-        assert viewer.window_rows < tall
-        # Back at the top, a taller pane re-fills the window again.
-        for _ in range(10):
-            page.action_viewer_page_up()
-        await pilot.pause()
-        assert viewer.line_start == 0
-        await pilot.resize_terminal(120, 60)
-        for _ in range(SETTLE):
-            await pilot.pause()
-            if viewer.window_rows > tall and len(viewer.lines) == viewer.window_rows:
-                break
-        assert viewer.window_rows == viewer.body.size.height
-        assert len(viewer.lines) == viewer.window_rows
+        assert len(viewer.lines) == expected
+        assert viewer.body.max_scroll_y == expected - viewer.window_rows
 
 
 @run_async
 async def test_yaml_is_viewed_as_plain_text_with_line_numbers(
     tree: Path, tmp_path: Path
 ) -> None:
-    """YAML is windowed like source text and reaches the screen exactly as written."""
+    """YAML is numbered like source text and reaches the screen exactly as written."""
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "conf.yaml")
         assert viewer.kind == "text"
-        assert viewer.is_windowed is True
         assert viewer.is_rendered is False
         # Nothing is re-indented and no ``key: value`` space is invented.
         assert viewer.lines == ["name: day", "list:", "      - a", "url:http://x"]
@@ -355,27 +335,29 @@ async def test_yaml_is_viewed_as_plain_text_with_line_numbers(
         assert "url: http://x" not in body
 
 
-# -- AC3: a window of a big file, moved without reading it all --------------
+# -- AC3: one bounded, natively scrollable document ------------------------
 
 
 @run_async
-async def test_plain_text_opens_one_window_of_lines(tree: Path, tmp_path: Path) -> None:
+async def test_plain_text_opens_as_one_scrollable_document(tree: Path, tmp_path: Path) -> None:
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "code.py")
         assert viewer.kind == "text"
-        assert viewer.is_windowed is True
         assert viewer.is_rendered is False
         assert viewer.line_count == 200
+        assert len(viewer.lines) == 200
         assert viewer.line_start == 0
-        assert len(viewer.lines) == viewer.window_rows
+        assert viewer.body.max_scroll_y == 200 - viewer.window_rows
+        # Numbered source never soft-wraps: one document line is one screen row.
+        assert viewer.text_widget.virtual_size.height == 200
         assert str(viewer.text_widget.content).startswith("  1  line 1")
 
 
 @run_async
-async def test_paging_moves_the_window_and_clamps_at_the_end(tree: Path, tmp_path: Path) -> None:
+async def test_paging_scrolls_the_body_and_clamps_at_the_end(tree: Path, tmp_path: Path) -> None:
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
@@ -384,65 +366,169 @@ async def test_paging_moves_the_window_and_clamps_at_the_end(tree: Path, tmp_pat
         page.action_viewer_page_down()
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.window_rows
-        first = str(viewer.text_widget.content).splitlines()[0]
-        assert re.fullmatch(rf"\s*{viewer.window_rows + 1}\s+line {viewer.window_rows + 1}", first)
+        # The whole document stays mounted; scrolling moves the viewport, not a
+        # window of content.
+        assert str(viewer.text_widget.content).startswith("  1  line 1")
         page.action_viewer_up()
         page.action_viewer_up()
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.window_rows - 2
-        # The window moved back two lines: its first row is the new start.
-        first = str(viewer.text_widget.content).splitlines()[0]
-        assert re.fullmatch(rf"\s*{viewer.window_rows - 1}\s+line {viewer.window_rows - 1}", first)
         # Paging far past the end leaves the last line on screen.
         for _ in range(30):
             page.action_viewer_page_down()
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == 200 - viewer.window_rows
-        assert "line 200" in str(viewer.text_widget.content)
+        assert f"line {viewer.line_start + 1} of 200" in str(viewer.status.content)
 
 
 @run_async
-async def test_a_huge_file_reports_its_size_without_counting(
+async def test_the_full_page_viewer_scrolls_a_text_file_like_markdown(
+    tree: Path, tmp_path: Path
+) -> None:
+    """The whole-pane Viewers tab gets the same scrollable body Markdown has."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.open_view()
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if page.viewer is not None and not page.viewer.loading:
+                break
+        await pilot.press("ctrl+2")
+        viewers = app.query_one(ViewersPage)
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if app.active_page == "viewers" and viewers.viewer is not None:
+                break
+        mounted = viewers.viewer
+        assert mounted is not None
+        assert mounted.body.max_scroll_y > 0
+        assert mounted.line_start == 0
+        # Tab focuses the body, exactly as it does for a rendered Markdown file;
+        # the native page key then moves it.
+        await pilot.press("tab", "pagedown")
+        await pilot.pause()
+        assert mounted.line_start > 0
+
+
+@run_async
+async def test_the_advertised_page_keys_reach_the_viewer(tree: Path, tmp_path: Path) -> None:
+    """The focused listing must not swallow ``ctrl+pageup``/``pagedown``.
+
+    ``DataTable`` inherits ``ScrollableContainer``'s horizontal page bindings, and
+    Textual resolves keys from the focused widget upwards. That defect made
+    the page keys scroll the table's columns instead of the viewer -- the window
+    only moved when a test called the action directly.
+    """
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "code.py")
+        page.active.table.focus()
+        await pilot.press("ctrl+pagedown")
+        await pilot.pause()
+        assert viewer.line_start == viewer.window_rows
+        await pilot.press("ctrl+pageup")
+        await pilot.pause()
+        assert viewer.line_start == 0
+
+
+@run_async
+async def test_a_file_above_the_view_limit_is_truncated_with_a_notice(
     tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """One limit for every inline kind: past it the head is shown and said so."""
     huge = tree / "huge.txt"
-    with huge.open("w", encoding="utf-8") as handle:
-        for number in range(20_000):
-            handle.write(f"row {number}\n")
-    monkeypatch.setattr(content, "LINE_COUNT_LIMIT", 64)
+    huge.write_text("\n".join(f"row {number}" for number in range(1, 201)) + "\n", encoding="utf-8")
+    monkeypatch.setattr(content, "VIEW_LIMIT", 200)
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "huge.txt")
         assert viewer.kind == "text"
-        assert viewer.line_count is None
-        assert "not counted" in str(viewer.status.content)
-        assert len(viewer.lines) == viewer.window_rows
-        # Still navigable, and still one window at a time.
+        assert viewer.notice.display is True
+        assert "larger than" in str(viewer.notice.content)
+        assert viewer.line_count < 200
+        assert "row 200" not in str(viewer.text_widget.content)
+        # It still scrolls natively, right where the document was cut.
+        assert viewer.body.max_scroll_y == viewer.line_count - viewer.window_rows
         page.action_viewer_page_down()
         await settle(pilot, page, row_count(tree))
-        assert viewer.line_start == viewer.window_rows
-
-
-# -- AC3: search -----------------------------------------------------------
+        assert viewer.line_start > 0
 
 
 @run_async
-async def test_search_reports_matches_and_jumps_to_the_first(tree: Path, tmp_path: Path) -> None:
+async def test_goto_line_centres_the_line_without_reloading(tree: Path, tmp_path: Path) -> None:
+    """DC-037: a bounded line jump is scroll maths over the mounted document.
+
+    A content hit lands here: the matched line must be centred, the document
+    must be the same one mount (no re-read), and a line past the shown
+    document clamps to the end instead of crashing or reloading.
+    """
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "code.py")
-        page.action_search_viewer()
+        document = viewer.document
+        viewer.goto_line(180)
+        await settle(pilot, page, row_count(tree))
+        rows = viewer.window_rows
+        assert viewer.line_start == 180 - 1 - (rows - 1) // 2
+        assert viewer.document is document, "goto_line must not reload"
+        # A line the shown document does not cover clamps to the end.
+        viewer.goto_line(50_000)
         await pilot.pause()
-        assert isinstance(viewer.search_input, Input)
+        assert viewer.line_start == viewer.body.max_scroll_y
+
+
+@run_async
+async def test_goto_line_is_a_no_op_for_rendered_markdown(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "doc.md")
+        offset = viewer.body.scroll_y
+        viewer.goto_line(9)
+        await pilot.pause()
+        assert viewer.body.scroll_y == offset
+
+
+# -- AC3: search -----------------------------------------------------------
+
+
+def test_the_find_and_next_match_keys_are_pinned() -> None:
+    """DC-037 AC8: page bindings, config.py and Settings agree on find keys."""
+    page_keys = {binding.action: binding.key for binding in FilesPage.BINDINGS}
+    assert page_keys["search_viewer"] == "f2"
+    assert page_keys["next_match"] == "ctrl+g"
+    assert page_keys["cycle_search"] == "ctrl+f"
+    for action in ("search_viewer", "next_match", "cycle_search"):
+        assert page_keys[action] == DEFAULT_KEYBINDINGS[action]
+
+
+@run_async
+async def test_f2_opens_the_find_box_and_reports_matches(tree: Path, tmp_path: Path) -> None:
+    """DC-037: find moved to ``f2``; ``ctrl+f`` now belongs to the Files modes."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "code.py")
+        await pilot.press("f2")
+        await pilot.pause()
+        assert viewer.search_open
         viewer.search_input.value = "line 120"
         for _ in range(SETTLE):
             await pilot.pause()
             if viewer.hits:
                 break
+        assert isinstance(viewer.search_input, Input)
         assert viewer.hits == [120]
         assert viewer.line_start == 120 - 1
         assert "1/1 matches" in str(viewer.status.content)
@@ -450,13 +536,14 @@ async def test_search_reports_matches_and_jumps_to_the_first(tree: Path, tmp_pat
 
 
 @run_async
-async def test_next_match_walks_the_hits_and_wraps(tree: Path, tmp_path: Path) -> None:
+async def test_ctrl_g_walks_the_hits_and_ctrl_f_cannot(tree: Path, tmp_path: Path) -> None:
+    """DC-037 AC8: with a viewer open, ``ctrl+f`` cycles Files modes instead."""
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "code.py")
-        page.action_search_viewer()
+        await pilot.press("f2")
         viewer.search_input.value = "line 5 "
         for _ in range(SETTLE):
             await pilot.pause()
@@ -466,13 +553,23 @@ async def test_next_match_walks_the_hits_and_wraps(tree: Path, tmp_path: Path) -
         assert viewer.hits[0] == 5
         assert viewer.hits[1:4] == [50, 51, 52]
         assert viewer.hits[-1] == 59
-        page.action_next_match()
+        await pilot.press("ctrl+g")
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.hits[1] - 1
         for _ in range(len(viewer.hits) - 1):
-            page.action_next_match()
+            await pilot.press("ctrl+g")
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.hits[0] - 1
+        # And ``ctrl+f`` is never the find box while a viewer is open: it
+        # opens the Files search bar and rolls that mode, leaving the file
+        # (and its own find box) exactly as they were.
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        assert page.filter_input.display
+
+        assert isinstance(app.focused, Input)
+        assert page.panel("left").search_mode == "recursive"
+        assert page.viewer is viewer
 
 
 @run_async
@@ -493,6 +590,392 @@ async def test_escape_closes_the_search_first(tree: Path, tmp_path: Path) -> Non
         await pilot.press("escape")
         await pilot.pause()
         assert page.viewer is None
+
+
+@run_async
+async def test_tab_focus_scrolls_the_pane_viewer_with_native_keys(
+    tree: Path, tmp_path: Path
+) -> None:
+    """With the body focused, arrow/page keys scroll it -- as in the Viewers tab."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "code.py")
+        for _ in range(6):
+            await pilot.press("tab")
+            await pilot.pause()
+            if app.focused is viewer.body:
+                break
+        assert app.focused is viewer.body
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert viewer.line_start > 0
+        await pilot.press("down")
+        await pilot.pause()
+        assert viewer.line_start > 0
+
+
+@run_async
+async def test_page_keys_still_page_the_listing_when_no_viewer_is_open(
+    tree: Path, tmp_path: Path
+) -> None:
+    """The priority viewer keys must not consume ctrl+pagedown with no viewer."""
+    (tree / ("a" * 90 + ".txt")).write_text("x\n", encoding="utf-8")
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is None
+        table = page.active.table
+        table.focus()
+        await pilot.pause()
+        assert table.max_scroll_x > 0
+        await pilot.press("ctrl+pagedown")
+        await pilot.pause()
+        assert table.scroll_x > 0
+
+
+@run_async
+async def test_a_long_file_reports_that_highlights_are_off(tree: Path, tmp_path: Path) -> None:
+    """Above HIGHLIGHT_LINES the search still jumps, but says highlights are off."""
+    (tree / "many.txt").write_text("needle\n" * 2_100, encoding="utf-8")
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "many.txt")
+        page.action_search_viewer()
+        viewer.search_input.value = "needle"
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if viewer.hits:
+                break
+        assert len(viewer.hits) == 2_100
+        assert viewer.line_start == 0
+        assert "highlights off" in str(viewer.status.content)
+
+
+@run_async
+async def test_double_enter_opens_a_text_file_in_the_os_viewer(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A double ``enter`` hands a plain-text file to the OS, after asking."""
+    # The harness's key/pause round trips are slower than a human double press;
+    # widen the window so the test proves the gesture, not the clock.
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        # The first enter is still the internal viewer; nothing has launched.
+        assert opened == []
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, LaunchScreen)
+        assert "code.py" in screen.detail_text()
+        await pilot.press("y")
+        await pilot.pause()
+        assert opened == [tree / "code.py"]
+
+
+@run_async
+async def test_a_slow_second_enter_does_not_launch_anything(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The double-enter window is finite; a later enter only re-opens the viewer."""
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 0.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "code.py"
+
+
+@run_async
+async def test_closing_the_viewer_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enter -> Escape -> Enter must reopen the viewer, never ask to launch."""
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        await pilot.press("escape")
+        await pilot.pause()
+        assert page.viewer is None
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+
+
+@run_async
+async def test_navigating_the_listing_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paging or moving to another entry drops the gesture: nothing may launch.
+
+    The list page keys page by moving the virtual cursor, so both are cursor
+    movement in the end; what the card requires is that after either of them
+    the next enter (even half a second later) only re-opens the internal viewer.
+    If the pending gesture had survived, the wide window would make that enter
+    a confirmed launch instead.
+    """
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        # Paging is cursor movement: it must forget the pending gesture.
+        page.active.action_page_down()
+        await pilot.pause()
+        # Back to a file row; the armed gesture must already be gone.
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "code.py"
+
+
+@run_async
+async def test_wheel_scrolling_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enter -> a wheel notch over the listing -> Enter must re-view, never launch.
+
+    The panel's virtual-scroll math drags the cursor onto the window's leading
+    edge, which for an unscrolled listing is row ``SCROLL_STEP`` -- so the test
+    arms on that entry and the row under the cursor is provably still the same
+    file after the notch. With the gesture still armed, the wide window would
+    turn the second enter into a confirmed launch; the cancellation lives on
+    the real wheel path (``MouseScrollDown`` -> the panel handler ->
+    ``scroll_view``), which is what this event travels (AC5).
+    """
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        panel = page.active
+        panel.move_cursor(row_index(panel, "conf.yaml"))
+        panel.table.focus()
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        panel.table.post_message(
+            MouseScrollDown(
+                widget=panel.table,
+                x=1,
+                y=1,
+                delta_x=0,
+                delta_y=1,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
+        await pilot.pause()
+        assert row_index(panel, "conf.yaml") == panel.cursor_index
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "conf.yaml"
+
+
+@run_async
+async def test_switching_panels_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enter -> switch panes and back -> Enter must re-view, never launch.
+
+    A switch moves the ``enter`` target to the other panel's cursor; coming
+    straight back must not still find the gesture armed, or the second enter
+    on the untouched row would launch instead of re-opening the viewer (AC5).
+    """
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        page.set_active_panel("right")
+        page.set_active_panel("left")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "code.py"
+
+
+@run_async
+async def test_filtering_the_listing_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enter -> a filter refresh -> its rebuild must drop the armed gesture.
+
+    ``set_filter`` ends in ``apply_entries``, the same endpoint a sort
+    refresh feeds, so proving it there covers both (AC5). The filter hides
+    the ``..`` row, so the rebuild leaves the cursor on the one match -- the
+    very file the gesture was armed on -- and a second enter must only
+    re-open the internal viewer, never launch.
+    """
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        page.active.set_filter("code")
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if not page.active.loading and page.active.total_count == 1:
+                break
+        else:
+            raise AssertionError("the filtered listing never arrived")
+        assert page.active._last_enter is None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "code.py"
+
+
+@run_async
+async def test_alt_enter_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``enter`` -> ``alt+enter`` -> ``enter`` must re-view, never launch.
+
+    ``alt+enter`` swaps the viewer for the properties table, so the gesture
+    armed on the listing does not point at any mounted view any more (AC5):
+    the cancellation lives on the real ``alt+enter`` path
+    (``action_properties`` -> ``open_properties``), which is what this
+    key sequence travels. With the gesture still armed, the wide window
+    would turn the second enter into a confirmed launch.
+    """
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        await pilot.press("alt+enter")
+        for _ in range(SETTLE):
+            await pilot.pause()
+            if page.properties_view is not None and not page.properties_view.loading:
+                break
+        else:
+            raise AssertionError("the properties view never arrived")
+        # The properties table replaced the viewer, and the armed gesture
+        # is gone with the view it pointed at.
+        assert page.viewer is None
+        assert page.properties_view is not None
+        assert page.active._last_enter is None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "code.py"
+
+
+@run_async
+async def test_tab_switching_ends_the_double_enter_gesture(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``enter`` -> ``ctrl+left`` -> ``enter`` must re-view, never launch.
+
+    ``ctrl+left`` moves the viewer pane's tabsheet off the Viewer tab, hiding
+    the viewer, so the gesture armed on the ``enter`` panel dies with it
+    (AC5): the cancellation lives on the real ``ctrl+left`` path
+    (``action_previous_tab``, which clears both panels because the armed
+    panel is not the panel whose tabsheet moves). The final ``enter``
+    re-opening the viewer proves the switch itself still works.
+    """
+    monkeypatch.setattr("daylight.components.modules.file_list.DOUBLE_ENTER_TIMEOUT", 10.0)
+    app = make_app(tree, tmp_path / "config.json")
+    opened: list[Path] = []
+    app.file_manager.launch = lambda request: opened.append(Path(request.target)) or 0  # type: ignore[method-assign]
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        page.active.move_cursor(row_index(page.active, "code.py"))
+        page.active.table.focus()
+        await pilot.press("enter")
+        await settle(pilot, page, row_count(tree))
+        assert page.viewer is not None
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        # The switch hid the viewer, and the armed gesture is gone with it.
+        assert page.active._last_enter is None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert not isinstance(app.screen, LaunchScreen)
+        assert page.viewer is not None
+        assert page.viewer.path.name == "code.py"
 
 
 # -- AC4: a binary file is not rendered inline, and never launched silently --
