@@ -1,5 +1,5 @@
-/* Builder page (DC-025): prompt, agent transcript, question panel, live
-   preview, saved dashboards. Colors arrive as $name variables from
+/* Builder page (DC-025): prompt, agent transcript, question panel, saved
+   dashboards. Colors arrive as $name variables from
    daylight.themes.get_css_variables(); no color literal here (ADR-004). */
 
 #builder-page {
@@ -61,17 +61,6 @@
 
 #builder-question-custom {
     height: 3;
-}
-
-#builder-preview {
-    height: 1fr;
-    background: $panel;
-    border: round $secondary;
-    padding: 0 1;
-}
-
-#builder-preview-text {
-    color: $foreground;
 }
 
 #builder-dashboards {

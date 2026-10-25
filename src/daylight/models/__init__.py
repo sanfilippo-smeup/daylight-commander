@@ -23,7 +23,6 @@ __all__ = [
     "FileEntry",
     "FileProperties",
     "FileStat",
-    "SandboxResult",
     "SearchHit",
     "Theme",
     "ViewDocument",
@@ -313,22 +312,6 @@ class BuilderEvent:
     kind: str
     text: str = ""
     question: BuilderQuestion | None = None
-
-
-@dataclass(frozen=True)
-class SandboxResult:
-    """Outcome of one sandboxed script run (DC-024).
-
-    ``exit_code`` is the script's exit status (negative when a signal killed
-    it), ``timed_out`` is True when the wall-clock timeout had to kill it, and
-    ``duration_seconds`` is the observed wall-clock time.
-    """
-
-    exit_code: int
-    stdout: str
-    stderr: str
-    timed_out: bool
-    duration_seconds: float
 
 
 @dataclass(frozen=True)
