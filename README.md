@@ -83,13 +83,13 @@ Then run `daylight`.
 
 ### Option 2 — install from a release asset
 
-Download `daylight_commander-1.3.0-py3-none-any.whl` from the
+Download `daylight_commander-1.3.1-py3-none-any.whl` from the
 [latest release](https://github.com/sanfilippo-smeup/daylight-commander/releases/latest), then:
 
 ```bash
-uv tool install ./daylight_commander-1.3.0-py3-none-any.whl
+uv tool install ./daylight_commander-1.3.1-py3-none-any.whl
 # or
-pip install ./daylight_commander-1.3.0-py3-none-any.whl
+pip install ./daylight_commander-1.3.1-py3-none-any.whl
 ```
 
 ### Option 3 — build from a source checkout
@@ -99,7 +99,7 @@ Clone the repository, then build or install locally:
 ```bash
 git clone https://github.com/sanfilippo-smeup/daylight-commander.git
 cd daylight-commander
-uv build              # → dist/daylight_commander-1.3.0-py3-none-any.whl + .tar.gz
+uv build              # → dist/daylight_commander-1.3.1-py3-none-any.whl + .tar.gz
 uv tool install .     # install the local package as a tool
 ```
 

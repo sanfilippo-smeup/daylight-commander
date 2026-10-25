@@ -5,6 +5,25 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-10-25
+
+Internal cleanup; no user-visible change.
+
+### Removed
+
+- The unused Revision-5 sandboxed-script path: `managers/sandbox.py`, its
+  `tests/test_sandbox.py`, the `SandboxResult` model and its export, and the
+  dead `#builder-preview` / `#builder-preview-text` styles and stale preview
+  comment. The declarative dashboard flow, page set, and CLI are unchanged
+  (DC-033).
+
+### Notes
+
+- Gates for this release: `uv run ruff check .` clean and `uv run pytest -q` —
+  868 passed, including 16 UI snapshots (the 16 fewer tests are exactly the
+  deleted sandbox tests).
+- Post-run Evaluator+ returned **PASS** (DC-EVAL-008) in legacy PRD mode.
+
 ## [1.3.0] - 2026-10-25
 
 Terminal page navigation and three-mode Files search, on top of the File types

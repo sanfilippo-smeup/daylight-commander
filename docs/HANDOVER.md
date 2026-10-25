@@ -34,11 +34,19 @@ afterwards from the same repository.
 | 1.1.0 | 2026-10-16 | Read-only **Stats** tab (`Ctrl+5`) with dependency-free charts computed on a worker thread and a safety cap | PRD Revision 4, ADR-013 |
 | 1.2.0 | 2026-10-22 | **AI dashboard builder**: Builder tab (`Ctrl+6`), declarative specification contract, native **Dashboard** tab, opencode v2 with a v1 fallback; saved specifications under `$XDG_DATA_HOME/daylight/dashboards` (Revision-5 script artifacts are legacy and inert) | PRD Revision 6, ADR-014 / ADR-015 / ADR-016 |
 | 1.3.0 | 2026-10-25 | **Terminal page navigation** (`Ctrl+N` / `Ctrl+B`, wrapping, Dashboard included while mounted) and **three Files search modes** (Filter, recursive names, recursive content; `Ctrl+F` cycles, `F2` viewer find); also delivers the File types tab (`Ctrl+7`) and the bounded native viewer with double-Enter open since 1.2.0 | PRD Revision 6 (frozen) |
+| 1.3.1 | 2026-10-25 | Internal cleanup, no user-visible change: removes the unused Revision-5 sandbox manager/model/tests and the dead Builder preview styles (DC-033) | PRD Revision 6 (frozen) |
 
 Release 1.3.0 was developed on `feat/filetype-and-viewer` and delivers cards
 DC-034 … DC-037 on top of 1.2.0. Its gates were `uv run ruff check .` clean and
 `uv run pytest -q` — 884 passed, including 16 UI snapshots; Evaluator+ returned
 PASS (DC-EVAL-007). The frozen PRD Revision 6 and ADR were not modified.
+
+Release 1.3.1 lands the revived DC-033 cleanup (card from the 1.2.0 cycle) on
+`main` from `feat/dc-033-sandbox-cleanup`: the unused sandbox manager, model and
+tests plus the dead Builder preview styles are removed with no user-visible
+change. Gates: `uv run ruff check .` clean, `uv run pytest -q` — 868 passed,
+16 UI snapshots (the 16 fewer are the deleted sandbox tests); Evaluator+
+returned PASS (DC-EVAL-008).
 
 Release 1.2.0 was developed on `feat/ai-dashboard-builder` and delivers cards
 DC-024 … DC-032. Its gates were `uv run ruff check .` clean and
