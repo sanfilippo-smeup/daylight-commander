@@ -26,7 +26,7 @@ from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.reactive import var
 from textual.widget import Widget
-from textual.widgets import Tabs
+from textual.widgets import Tab, Tabs
 
 from daylight import themes
 from daylight.components import file_table
@@ -147,6 +147,19 @@ class DaylightApp(App[None]):
             show=False,
             id="goto_filetypes",
         ),
+        # DC-036: the tab walk for terminals that never transmit
+        # ``ctrl+digit``. Like the digit keys these are hidden from the footer;
+        # the README and the palette present them.
+        Binding(
+            DEFAULT_KEYBINDINGS["next_page"], "next_page", "Next tab", show=False, id="next_page"
+        ),
+        Binding(
+            DEFAULT_KEYBINDINGS["previous_page"],
+            "previous_page",
+            "Previous tab",
+            show=False,
+            id="previous_page",
+        ),
     ]
     #: The palette keeps Textual's own system commands and adds every Daylight one.
     COMMANDS: ClassVar[set[object]] = {*App.COMMANDS, DaylightCommandProvider}
@@ -174,6 +187,10 @@ class DaylightApp(App[None]):
         ("Go to Stats", "goto_stats", "Directory statistics for the active pane"),
         ("Go to Builder", "goto_builder", "Build a dashboard with AI"),
         ("Go to File types", "goto_filetypes", "Files by extension for the active pane"),
+        # DC-036: the same tab walk, reachable without memorizing a key (the
+        # palette is where the footer-hidden tab keys live).
+        ("Next tab", "next_page", "Cycle to the next page"),
+        ("Previous tab", "previous_page", "Cycle to the previous page"),
         ("Next theme", "next_theme", "Switch to the next theme in the catalogue"),
     )
 
@@ -477,6 +494,60 @@ class DaylightApp(App[None]):
         """Palette: show the Dashboard tab (DC-030); offered once a dashboard exists."""
         self.show_page("dashboard")
 
+    # -- the portable tab walk (DC-036) ------------------------------------
+
+    def action_next_page(self) -> None:
+        """``ctrl+n``: show the page of the next tab, wrapping at the last one."""
+        self._cycle_page(+1)
+
+    def action_previous_page(self) -> None:
+        """``ctrl+b``: show the page of the previous tab, wrapping at the first."""
+        self._cycle_page(-1)
+
+    def _cycle_page(self, step: int) -> None:
+        """Show the page ``step`` positions from the active one in tab order.
+
+        The order is the live tab strip's, not the static ``PAGES`` table,
+        because the dynamic Dashboard tab exists only once a dashboard was
+        opened (DC-030); it joins the walk just while its page is mounted. With
+        fewer than two live tabs there is nothing to cycle, so the active page
+        is left as it is.
+        """
+        live = self._live_tab_pages()
+        if len(live) < 2:
+            return
+        try:
+            index = live.index(self.active_page)
+        except ValueError:
+            # The active page is not a tab yet -- a just-opened dashboard whose
+            # tab is still being attached -- so the walk continues from the
+            # strip's other end instead of crashing on the missing stop.
+            index = 0 if step < 0 else -1
+        self.show_page(live[(index + step) % len(live)])
+
+    def _live_tab_pages(self) -> list[str]:
+        """The page names on the live tab strip, in strip order.
+
+        A tab id is its page name (ADR-005). Every static page's tab is always
+        live; the one dynamic tab is kept only while its page is mounted, so a
+        stop can never select a tab with nothing behind it -- no empty page, no
+        dead tab.
+        """
+        pages: list[str] = []
+        for tab in self.tabs.query(Tab):
+            name = tab.id or ""
+            if name not in self.PAGES:
+                continue
+            if name == "dashboard" and not self._dashboard_is_live():
+                continue
+            pages.append(name)
+        return pages
+
+    def _dashboard_is_live(self) -> bool:
+        """Whether the Dashboard page is mounted, i.e. its tab has a page (DC-030)."""
+        page = self._pages.get("dashboard")
+        return isinstance(page, DashboardPage) and page.is_mounted
+
     # -- the AI dashboard (DC-030) -----------------------------------------
 
     def open_dashboard(self, spec: DashboardSpec, directory: Path | str) -> None:
@@ -664,12 +735,19 @@ class DaylightApp(App[None]):
                 dashboard_entry = self._dashboard_palette_entry()
                 if dashboard_entry is not None:
                     commands.append(dashboard_entry)
+        # A shell action that is also a keybinding ("Next tab" and
+        # "Previous tab", the DC-036 tab walk) is listed once: one entry per
+        # action, never the same action twice under the same title.
+        shell_titles = {title for title, _action, _description in self.SHELL_ACTIONS}
         overrides = self.app_config.keybindings
         for binding in Binding.make_bindings(list(self.BINDINGS)):
+            title = binding.description or binding.action
+            if title in shell_titles:
+                continue
             key = overrides.get(binding.id or "", binding.key)
             commands.append(
                 PaletteCommand(
-                    binding.description or binding.action,
+                    title,
                     f"press {format_key(key)}",
                     partial(self.call_next, self.run_action, binding.action),
                 )

@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every page is now reachable in macOS Terminal.app, which never transmits
+  `Ctrl+1`…`Ctrl+7`: `Ctrl+N` walks to the next page tab and `Ctrl+B` to
+  the previous one, wrapping at either end (palette entries "Next tab" /
+  "Previous tab", both rebindable on the Settings page like every action). The
+  digit shortcuts still work in terminals that do send them.
 - Long Java and other source files no longer appear stuck in the viewer: their
   page keys, mouse wheel and scrollbar work exactly like Markdown's.
 

@@ -24,6 +24,13 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "goto_stats": "ctrl+5",
     "goto_builder": "ctrl+6",
     "goto_filetypes": "ctrl+7",
+    # DC-036: two keys any terminal transmits for walking the tabs in order.
+    # Terminal.app never sends ``ctrl+digit`` at all, so ``ctrl+1``…``ctrl+7``
+    # above are dead keys there; these cover the same tabs without them and
+    # wrap around, while the digits stay available where the terminal sends
+    # them.
+    "next_page": "ctrl+n",
+    "previous_page": "ctrl+b",
     "up": "up",
     "down": "down",
     "switch_panel": "ctrl+t",

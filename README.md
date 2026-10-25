@@ -137,6 +137,7 @@ Dashboard tab) is also reachable from the palette and its tab.
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Scroll the viewer one screen |
 | `Ctrl+S` | Cycle sort column |
 | `Ctrl+R` | Reverse sort order |
+| `Ctrl+N` / `Ctrl+B` | Next tab / previous tab (wraps at either end) |
 | `Ctrl+C` | Copy field (properties page) |
 | `Ctrl+G` | Next match (viewer find) |
 | `Ctrl+P` | Command palette |
@@ -149,6 +150,14 @@ parent row (press `Enter` to ascend),
 closes the viewer. The viewer scroll keys above belong to the Files page; on
 the full-page Viewers tab (`Ctrl+2`) the body scrolls with the usual wheel, or
 with arrows/`PageDown` after `Tab` focuses it.
+
+> **Using Terminal.app on macOS?** Terminal.app does not transmit `Ctrl+1` …
+> `Ctrl+7`, so the digit shortcuts arrive as nothing at all. That is what
+> `Ctrl+N` (next tab) and `Ctrl+B` (previous tab) are for: they walk the
+> same page tabs in order and wrap at either end, in any terminal. The digit
+> keys keep working where the terminal does send them, and every binding —
+> these included — can be rebound on the Settings tab (open it from the
+> palette with `Ctrl+P`).
 
 ## Configuration
 
