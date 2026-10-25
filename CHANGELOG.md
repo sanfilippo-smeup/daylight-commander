@@ -5,7 +5,10 @@ All notable changes to Daylight Commander are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-10-25
+
+Terminal page navigation and three-mode Files search, on top of the File types
+tab and the bounded native viewer delivered since 1.2.0.
 
 ### Added
 
@@ -70,6 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digit shortcuts still work in terminals that do send them.
 - Long Java and other source files no longer appear stuck in the viewer: their
   page keys, mouse wheel and scrollbar work exactly like Markdown's.
+
+### Notes
+
+- Gates for this release: `uv run ruff check .` clean and `uv run pytest -q` —
+  884 passed, including 16 UI snapshots.
+- Post-run Evaluator+ returned **PASS** (DC-EVAL-007) in legacy PRD mode; the
+  frozen PRD Revision 6 and ADR were not modified.
+- `DC-033` (unused sandbox/preview cleanup) remains deferred by the owner and
+  preserved in `stash@{0}`; no user-visible behaviour depends on it.
 
 ## [1.2.0] - 2026-10-22
 
