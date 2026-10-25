@@ -3,7 +3,7 @@
 The viewer is mounted into the *inactive* panel's mount point by the Files page
 (ADR-010) and is never pushed as a screen, so it can never take the whole
 terminal -- and it is deliberately not focusable: the keyboard stays in the
-listing, and the page's viewer keys (``ctrl+up``/``ctrl+down``/``ctrl+f``/``ctrl+g``)
+listing, and the page's viewer keys (``ctrl+up``/``ctrl+down``/``f2``/``ctrl+g``)
 drive this widget from there. That is also why reading a file cannot make a stray
 ``f8`` delete it.
 
@@ -59,8 +59,10 @@ MATCH_STYLE = "reverse"
 HIGHLIGHT_LINES = 2_000
 
 #: The keys that drive the viewer, shown in the header so they are discoverable.
+#:
+#: Find is ``F2`` since DC-037: ``Ctrl+F`` cycles the Files-page search modes.
 KEY_HINTS = (
-    "F3 view \u2022 Alt+Enter props \u2022 F4 edit \u2022 Ctrl+F find \u2022 Ctrl+G next"
+    "F3 view \u2022 Alt+Enter props \u2022 F4 edit \u2022 F2 find \u2022 Ctrl+G next"
     " \u2022 esc close"
 )
 
@@ -150,6 +152,9 @@ class ViewerPanel(Vertical):
         self.hits: list[int] = []
         self.hit_index = -1
         self.needle = ""
+        #: A 1-based line the document should be centred on once drawn; set by
+        #: :meth:`open_at_line` before the document worker has finished (DC-037).
+        self._pending_line = 0
         self._loading = False
         self._highlighted = False
         self._markdown: Markdown | None = None
@@ -210,7 +215,7 @@ class ViewerPanel(Vertical):
 
     @property
     def search_input(self) -> Input:
-        """The search box, hidden until ``ctrl+f`` asks for it."""
+        """The search box, hidden until ``f2`` asks for it."""
         return self._search
 
     @property
@@ -301,6 +306,10 @@ class ViewerPanel(Vertical):
         self._loading = False
         self.update_header()
         self.update_status()
+        pending = self._pending_line
+        self._pending_line = 0
+        if pending:
+            self.goto_line(pending)
 
     def _scroll_to_top(self) -> None:
         """Put the body back on the first line, without animation."""
@@ -337,6 +346,35 @@ class ViewerPanel(Vertical):
         """Put the top of the body on 1-based ``line``."""
         self._body.scroll_to(y=max(0, line - 1), animate=False, immediate=True)
         self.update_status()
+
+    def goto_line(self, line: int) -> None:
+        """Scroll the numbered document so 1-based ``line`` is centred (DC-037).
+
+        Pure scroll maths over the document already mounted: no reload, no
+        re-read, and find/highlight state untouched -- the same body the wheel
+        and the page keys move. A rendered Markdown body has no line
+        addresses, so a jump there is a no-op, and a line the document shows
+        beyond (a longer file than the viewer's line cap) clamps to the end.
+        """
+        if self._markdown is not None or not self.lines:
+            return
+        target = max(1, min(line, self.line_count))
+        top = max(0, target - 1 - max(0, self.window_rows - 1) // 2)
+        self._body.scroll_to(y=top, animate=False, immediate=True)
+        self.update_status()
+
+    def open_at_line(self, line: int) -> None:
+        """Centre ``line`` as soon as the document is drawn (DC-037).
+
+        Opening from a content hit races the document worker: a line queued
+        here is consumed by ``show_document`` when the document lands, and the
+        immediate call covers a viewer that already finished loading. Called
+        twice on one viewer still centres once -- the same line either way.
+        """
+        self._pending_line = max(0, line)
+        if self.lines and not self._loading:
+            self.goto_line(self._pending_line)
+            self._pending_line = 0
 
     def _draw_text(self, *, layout: bool = True) -> None:
         """Render the numbered document into the text widget.

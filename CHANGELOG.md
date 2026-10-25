@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Files search modes** — the search bar (`Ctrl+F`, or `/` for Filter) rolls
+  through three modes while keeping the typed query: **Filter** (the
+  current-directory name filter), **Recursive** (case-insensitive name
+  matches anywhere below the active pane's directory) and **Content**
+  (case-insensitive text matches inside those files). Recursive/content scans
+  are debounced by 250 ms, need two-or-more characters, run on a worker
+  thread and are cancellable: a newer query or move, `Escape` or an empty
+  query restores the plain listing. Name hits render as paths relative to the
+  pane directory; content hits render as `relative/path:line` with a ≤200-char
+  snippet, and `Enter` opens the internal viewer centred on the matched line.
+  Scans stop at 2,000 results (the search bar reports the cap), never read
+  files larger than 1 MiB, skip binary files (NUL byte in the first 8 KiB) and
+  never descend directory symlinks, so a symlink loop cannot hang a search.
+  Changing the hidden-files toggle re-runs the search that is on screen, and
+  result rows are read-only: sort and batch operations keep acting on real
+  listing rows only.
 - **File types tab** (`Ctrl+7`) — ranks the active pane's tree by file
   extension: summary cards for files / distinct types / scan time, and a
   top-20 bar chart that folds extensionless files into a `(none)` row. It
@@ -21,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The viewer find box moved from `Ctrl+F` to `F2`; `Ctrl+F` now always cycles
+  the Files search modes (above), and `Ctrl+G` still walks the find box's
+  matches.
 - The standalone `python -m daylight.filetype_dashboard` proof-of-concept is
   replaced by the in-app tab; the ranking rules stay in
   `managers/filetypes.py`, so they are unit-testable without a UI.

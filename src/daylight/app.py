@@ -33,7 +33,11 @@ from daylight.components import file_table
 from daylight.components.command_palette import DaylightCommandProvider, PaletteCommand
 from daylight.components.modules.builder_page import BuilderPage
 from daylight.components.modules.dashboard_page import DashboardPage
-from daylight.components.modules.file_list import FilesPage, LocationChanged
+from daylight.components.modules.file_list import (
+    RECURSIVE_MODES,
+    FilesPage,
+    LocationChanged,
+)
 from daylight.components.modules.filetypes_page import FileTypesPage
 from daylight.components.modules.properties_page import PropertiesPage
 from daylight.components.modules.settings_page import SettingsPage
@@ -278,7 +282,11 @@ class DaylightApp(App[None]):
         The bar reads in :data:`HINT_ORDER`'s sequence (DC-019): the file
         operations, then Palette, Switch pane, Quit. Actions the order does not
         name keep their page-then-app declaration order, ahead of the named
-        ones.
+        ones. One dynamic hint is appended for the one state the static
+        bindings cannot express: the Files page on screen with a recursive or
+        content search engaged (DC-037) names the cycling key and the mode;
+        outside that state the footer stays byte-identical to the pinned
+        DC-019 order.
         """
         page = self._pages.get(self.active_page)
         bindings: list[BindingType] = []
@@ -300,7 +308,30 @@ class DaylightApp(App[None]):
             rank = HINT_ORDER.get(binding.id or "", -1)
             collected.append((rank, position, key, binding.description or binding.action))
         collected.sort()
-        return [(key, description) for _, _, key, description in collected]
+        hints = [(key, description) for _, _, key, description in collected]
+        hints.extend(self._search_mode_hint(page))
+        return hints
+
+    def _search_mode_hint(self, page: Widget | None) -> list[tuple[str, str]]:
+        """The engaged Files search mode as one compact footer hint (DC-037 AC1).
+
+        ``page`` is the widget the active tab shows, so only a *shown* Files
+        page contributes: a search left engaged on an off-screen tab never
+        leaks into another page's footer. There is a hint in no other state --
+        the shared bar must be open and the active panel's mode must be
+        recursive or content -- which is what keeps the default Files footer
+        (Filter mode, bar closed, plain listing) byte-identical.
+        """
+        files = page if isinstance(page, FilesPage) else None
+        if files is None or not files.is_ready or not files.filter_input.display:
+            return []
+        mode = files.active.search_mode
+        if mode not in RECURSIVE_MODES:
+            return []
+        # A rebound cycling key is the key that works, so it is the key the
+        # hint shows (AC2, like every binding above).
+        key = self.app_config.keybindings.get("cycle_search", DEFAULT_KEYBINDINGS["cycle_search"])
+        return [(key, f"Search: {mode.title()}")]
 
     # -- lifecycle ---------------------------------------------------------
 

@@ -19,6 +19,14 @@ application.
 
 - **Dual-pane listing** — two independent directory panes with cursor
   navigation, type-ahead jumping, and hidden-file filtering (`/`).
+- **File search modes** — the Files search bar (`Ctrl+F` or `/`) has three
+  modes: **Filter** matches names in the current directory, **Recursive**
+  matches names anywhere under the pane's directory, and **Content** matches
+  text inside files under it. `Ctrl+F` rolls between the modes keeping the
+  query; each scan is debounced, runs on a worker thread, honours the
+  hidden-files toggle, skips binary and oversized files, and stops at the
+  2,000-hit cap. `Enter` opens a hit: directories navigate, files open in the
+  internal viewer, and content hits land centred on the matched line.
 - **File operations** — copy, move, rename, delete to trash, permanent wipe,
   new file, and new directory, all with confirmation dialogs.
 - **Format-aware viewer** — inspect files in a viewer with pretty-printed
@@ -135,19 +143,27 @@ Dashboard tab) is also reachable from the palette and its tab.
 | `Enter` twice | Open the file in the OS default application (with confirmation) |
 | `Ctrl+↑` / `Ctrl+↓` | Scroll the viewer one line |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Scroll the viewer one screen |
+| `Ctrl+F` | Cycle the Files search modes: Filter → Recursive → Content (query kept) |
+| `F2` | Find inside the viewer |
 | `Ctrl+S` | Cycle sort column |
 | `Ctrl+R` | Reverse sort order |
 | `Ctrl+N` / `Ctrl+B` | Next tab / previous tab (wraps at either end) |
 | `Ctrl+C` | Copy field (properties page) |
-| `Ctrl+G` | Next match (viewer find) |
+| `Ctrl+G` | Viewer find: next match |
 | `Ctrl+P` | Command palette |
 | `Ctrl+T` | Switch pane |
 | `Ctrl+Q` | Quit |
 
 Navigation extras: arrows move the cursor, `Backspace` highlights the `..`
 parent row (press `Enter` to ascend),
-`/` starts a filter, `Space` selects, `Ctrl+A` selects all, and `Escape`
-closes the viewer. The viewer scroll keys above belong to the Files page; on
+`/` opens the search bar in Filter mode, `Space` selects, `Ctrl+A` selects
+all, and `Escape`
+closes the viewer (and first unwinds a recursion/content search, restoring
+the plain listing; `Ctrl+F` re-opens the search bar and rolls its mode). The
+recursive and content scans only run for two-or-more characters and stop
+after 2,000 hits or files larger than 1 MiB; binary files (a NUL byte in the
+first 8 KiB) are never read. The viewer scroll keys above belong to the Files
+page; on
 the full-page Viewers tab (`Ctrl+2`) the body scrolls with the usual wheel, or
 with arrows/`PageDown` after `Tab` focuses it.
 

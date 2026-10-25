@@ -55,7 +55,11 @@ DEFAULT_KEYBINDINGS: dict[str, str] = {
     "edit": "f4",
     "copy_property": "ctrl+c",
     "next_match": "ctrl+g",
-    "search_viewer": "ctrl+f",
+    # DC-037: the Files search modes roll under ``ctrl+f`` (Filter → Recursive
+    # → Content), which is where the viewer find box used to sit; the find box
+    # moves to ``f2`` and ``ctrl+g`` stays the next-match key.
+    "cycle_search": "ctrl+f",
+    "search_viewer": "f2",
     "close_viewer": "escape",
     # External launches (DC-006). ``f9`` opens a URL found in the entry under the
     # cursor with the default browser, always behind a confirmation (FR-402).

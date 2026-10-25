@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from daylight.managers import content, external
-from daylight.models import DirEntry, FileEntry, FileProperties, ViewDocument
+from daylight.managers import content, external, search
+from daylight.models import DirEntry, FileEntry, FileProperties, SearchHit, ViewDocument
 
 __all__ = [
     "SORT_KEYS",
@@ -20,6 +20,7 @@ __all__ = [
     "OperationCancelled",
     "content",
     "external",
+    "search",
 ]
 
 #: Logged when a delete cannot reach the OS trash and falls back to ``rm``.
@@ -203,6 +204,97 @@ class FileManager:
     def permissions(self, path: str | os.PathLike[str]) -> str:
         """Return the ``rwxr-xr-x`` style permissions of ``path``."""
         return content.permission_string(Path(path).lstat().st_mode)
+
+    # -- search (DC-037) ------------------------------------------------------
+
+    def iter_name_matches(
+        self,
+        root: str | os.PathLike[str],
+        needle: str,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Iterator[SearchHit]:
+        """Yield a :class:`SearchHit` row for every name match below ``root``.
+
+        The scan itself lives in :mod:`daylight.managers.search`; this is the
+        single manager entry point the UI uses (ADR-003). Each hit is turned
+        into the same :class:`DirEntry` row a listing would have shown, and
+        ``relative`` is the path as displayed, relative to ``root``. A row that
+        vanishes mid-scan is skipped rather than aborting the search.
+        """
+        base = Path(root)
+        for path in search.iter_name_matches(
+            base, needle, show_hidden=self.show_hidden, cancel=cancelled
+        ):
+            row = self._row_from_path(path)
+            if row is not None:
+                yield SearchHit(entry=row, relative=self._display_path(path, base))
+
+    def iter_content_matches(
+        self,
+        root: str | os.PathLike[str],
+        needle: str,
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Iterator[SearchHit]:
+        """Yield a :class:`SearchHit` row for every content match below ``root``.
+
+        Same shape as :meth:`iter_name_matches`, plus the 1-based ``line`` and
+        the sanitized ``snippet`` of the match. Files are visited in order, so
+        consecutive hits in one file share the row already built for the file
+        rather than re-statting it per hit.
+        """
+        base = Path(root)
+        last_path: Path | None = None
+        last_row: DirEntry | None = None
+        for path, line, snippet in search.iter_content_matches(
+            base, needle, show_hidden=self.show_hidden, cancel=cancelled
+        ):
+            if path != last_path or last_row is None:
+                last_row = self._row_from_path(path)
+                last_path = path if last_row is not None else None
+            if last_row is None:
+                continue
+            yield SearchHit(
+                entry=last_row,
+                relative=self._display_path(path, base),
+                line=line,
+                snippet=snippet,
+            )
+
+    def _row_from_path(self, path: Path) -> DirEntry | None:
+        """The :class:`DirEntry` row for one absolute ``path``, or None.
+
+        Built with ``lstat`` and ``follow_symlinks=True`` for directories, the
+        same choices :meth:`iter_entries` makes, so a search row behaves
+        exactly like its listing twin (a symlinked directory navigates).
+        """
+        try:
+            info = path.lstat()
+        except OSError:
+            return None
+        is_symlink = path.is_symlink()
+        is_dir = path.is_dir()
+        return DirEntry(
+            name=path.name,
+            path=path,
+            is_dir=is_dir,
+            is_hidden=_is_hidden(path),
+            is_symlink=is_symlink,
+            size=info.st_size,
+            modified=info.st_mtime,
+            permissions=content.permission_string(info.st_mode),
+            kind=_kind_of(path.name, is_dir, is_symlink),
+            suffix=_suffix_of(path.name),
+        )
+
+    @staticmethod
+    def _display_path(path: Path, root: Path) -> str:
+        """Return ``path`` as displayed, relative to the search ``root``."""
+        try:
+            return str(path.relative_to(root))
+        except ValueError:  # pragma: no cover - the scan never leaves the root
+            return str(path)
 
     # -- viewing and editing (DC-004) ---------------------------------------
 

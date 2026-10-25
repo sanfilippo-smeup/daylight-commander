@@ -24,6 +24,7 @@ __all__ = [
     "FileProperties",
     "FileStat",
     "SandboxResult",
+    "SearchHit",
     "Theme",
     "ViewDocument",
     "VIEW_KINDS",
@@ -97,6 +98,28 @@ class DirEntry:
             kind="parent",
             suffix="",
         )
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """One Files-page search result row (DC-037).
+
+    A name hit carries the real entry (:attr:`entry`) and the path displayed in
+    the table, relative to the directory the search was rooted at. A content
+    hit is a match *inside* a file: the matching 1-based :attr:`line` and its
+    sanitized :attr:`snippet` ride along, and the entry always describes the
+    file the hit was found in rather than the line itself.
+    """
+
+    entry: DirEntry
+    relative: str
+    line: int = 0
+    snippet: str = ""
+
+    @property
+    def is_content(self) -> bool:
+        """True for a match found inside a file's text, not a name match."""
+        return self.line > 0
 
 
 @dataclass(frozen=True)

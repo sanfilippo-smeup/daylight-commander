@@ -13,7 +13,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-from daylight.models import DirEntry
+from daylight.models import DirEntry, SearchHit
 
 __all__ = [
     "COLUMNS",
@@ -21,6 +21,9 @@ __all__ = [
     "SCROLL_BUFFER",
     "SORT_ARROWS",
     "SORT_KEYS",
+    "SEARCH_MODES",
+    "build_hit_row",
+    "build_hit_rows",
     "build_row",
     "build_rows",
     "chain_entries",
@@ -32,8 +35,10 @@ __all__ = [
     "format_size",
     "icon_for",
     "name_order",
+    "next_search_mode",
     "next_sort_key",
     "prefix_match_index",
+    "search_placeholder",
     "sort_entries",
     "sort_key_for_column",
     "type_label",
@@ -53,6 +58,20 @@ COLUMN_SORT_KEYS: tuple[str, ...] = ("name", "size", "time", "type")
 
 #: Arrow appended to the active column header: ascending, then descending.
 SORT_ARROWS: tuple[str, str] = ("\u2191", "\u2193")
+
+#: The Files-page search modes, in the order ``Ctrl+F`` cycles them (DC-037).
+#:
+#: ``filter`` is the current-directory name filter (FR-104), ``recursive``
+#: matches names anywhere under the pane's directory and ``content`` matches
+#: inside files under it.
+SEARCH_MODES: tuple[str, ...] = ("filter", "recursive", "content")
+
+#: Cell text for the search placeholder, per mode: the visible mode signal.
+SEARCH_PLACEHOLDERS: dict[str, str] = {
+    "filter": "Filter\u2026",
+    "recursive": "Recursive search\u2026",
+    "content": "Content search\u2026",
+}
 
 #: Rows kept either side of the viewport, on top of the rows that fit on screen.
 #:
@@ -191,6 +210,39 @@ def build_rows(
         yield build_row(entry, selected=entry.path in selected)
 
 
+def build_hit_row(hit: SearchHit) -> tuple[str | Text, ...]:
+    """Return the display cells for one search hit (DC-037).
+
+    Name hits read like listing rows, but the Name cell shows the path
+    relative to the search root instead of the bare name. A content hit shows
+    ``relative/path:line`` with the matched line's sanitized snippet behind it
+    (dimmed), so one row is the whole answer and no new column is needed --
+    the Name column already auto-sizes.
+
+    The entry's size, time and permissions are the real ones from ``lstat``,
+    and the cells are the same four columns a listing row has.
+    """
+    entry = hit.entry
+    label = f"{hit.relative}:{hit.line}" if hit.is_content else hit.relative
+    name = f"{icon_for(entry)} {label}"
+    cells = (
+        format_size(entry),
+        format_mtime(entry),
+        format_permissions(entry),
+    )
+    if hit.is_content:
+        text = Text(name)
+        text.append(f"  \u2502 {hit.snippet}", style="dim")
+        return (text, *cells)
+    return (name, *cells)
+
+
+def build_hit_rows(hits: Iterable[SearchHit]) -> Iterator[tuple[str | Text, ...]]:
+    """Lazily yield the display rows of search hits (same window machinery)."""
+    for hit in hits:
+        yield build_hit_row(hit)
+
+
 # -- virtualisation ---------------------------------------------------------
 
 
@@ -265,6 +317,22 @@ def next_sort_key(current: str) -> str:
     if current not in SORT_KEYS:
         return SORT_KEYS[0]
     return SORT_KEYS[(SORT_KEYS.index(current) + 1) % len(SORT_KEYS)]
+
+
+def next_search_mode(current: str) -> str:
+    """Return the search mode that follows ``current`` (``Ctrl+F`` order).
+
+    An unknown mode (a future enum slip) restarts the cycle at ``filter`` for
+    the same reason :func:`next_sort_key` does.
+    """
+    if current not in SEARCH_MODES:
+        return SEARCH_MODES[0]
+    return SEARCH_MODES[(SEARCH_MODES.index(current) + 1) % len(SEARCH_MODES)]
+
+
+def search_placeholder(mode: str) -> str:
+    """Return the search placeholder that names ``mode`` on screen."""
+    return SEARCH_PLACEHOLDERS.get(mode, SEARCH_PLACEHOLDERS[SEARCH_MODES[0]])
 
 
 def prefix_match_index(names: list[str], prefix: str, start: int = 0) -> int | None:

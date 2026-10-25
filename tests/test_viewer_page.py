@@ -25,6 +25,7 @@ from daylight.app import DaylightApp
 from daylight.components.modules.file_list import FilesPage
 from daylight.components.modules.viewer import ViewerPanel
 from daylight.components.modules.viewers_page import ViewersPage
+from daylight.config import DEFAULT_KEYBINDINGS
 from daylight.managers import ConfigManager, FileManager, content
 from daylight.managers.external import EditDispatch
 from daylight.modals import LaunchScreen
@@ -460,24 +461,74 @@ async def test_a_file_above_the_view_limit_is_truncated_with_a_notice(
         assert viewer.line_start > 0
 
 
-# -- AC3: search -----------------------------------------------------------
-
-
 @run_async
-async def test_search_reports_matches_and_jumps_to_the_first(tree: Path, tmp_path: Path) -> None:
+async def test_goto_line_centres_the_line_without_reloading(tree: Path, tmp_path: Path) -> None:
+    """DC-037: a bounded line jump is scroll maths over the mounted document.
+
+    A content hit lands here: the matched line must be centred, the document
+    must be the same one mount (no re-read), and a line past the shown
+    document clamps to the end instead of crashing or reloading.
+    """
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "code.py")
-        page.action_search_viewer()
+        document = viewer.document
+        viewer.goto_line(180)
+        await settle(pilot, page, row_count(tree))
+        rows = viewer.window_rows
+        assert viewer.line_start == 180 - 1 - (rows - 1) // 2
+        assert viewer.document is document, "goto_line must not reload"
+        # A line the shown document does not cover clamps to the end.
+        viewer.goto_line(50_000)
         await pilot.pause()
-        assert isinstance(viewer.search_input, Input)
+        assert viewer.line_start == viewer.body.max_scroll_y
+
+
+@run_async
+async def test_goto_line_is_a_no_op_for_rendered_markdown(tree: Path, tmp_path: Path) -> None:
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "doc.md")
+        offset = viewer.body.scroll_y
+        viewer.goto_line(9)
+        await pilot.pause()
+        assert viewer.body.scroll_y == offset
+
+
+# -- AC3: search -----------------------------------------------------------
+
+
+def test_the_find_and_next_match_keys_are_pinned() -> None:
+    """DC-037 AC8: page bindings, config.py and Settings agree on find keys."""
+    page_keys = {binding.action: binding.key for binding in FilesPage.BINDINGS}
+    assert page_keys["search_viewer"] == "f2"
+    assert page_keys["next_match"] == "ctrl+g"
+    assert page_keys["cycle_search"] == "ctrl+f"
+    for action in ("search_viewer", "next_match", "cycle_search"):
+        assert page_keys[action] == DEFAULT_KEYBINDINGS[action]
+
+
+@run_async
+async def test_f2_opens_the_find_box_and_reports_matches(tree: Path, tmp_path: Path) -> None:
+    """DC-037: find moved to ``f2``; ``ctrl+f`` now belongs to the Files modes."""
+    app = make_app(tree, tmp_path / "config.json")
+    async with app.run_test(size=SIZE) as pilot:
+        page = app.query_one(FilesPage)
+        await settle(pilot, page, row_count(tree))
+        viewer = await open_at(pilot, page, "code.py")
+        await pilot.press("f2")
+        await pilot.pause()
+        assert viewer.search_open
         viewer.search_input.value = "line 120"
         for _ in range(SETTLE):
             await pilot.pause()
             if viewer.hits:
                 break
+        assert isinstance(viewer.search_input, Input)
         assert viewer.hits == [120]
         assert viewer.line_start == 120 - 1
         assert "1/1 matches" in str(viewer.status.content)
@@ -485,13 +536,14 @@ async def test_search_reports_matches_and_jumps_to_the_first(tree: Path, tmp_pat
 
 
 @run_async
-async def test_next_match_walks_the_hits_and_wraps(tree: Path, tmp_path: Path) -> None:
+async def test_ctrl_g_walks_the_hits_and_ctrl_f_cannot(tree: Path, tmp_path: Path) -> None:
+    """DC-037 AC8: with a viewer open, ``ctrl+f`` cycles Files modes instead."""
     app = make_app(tree, tmp_path / "config.json")
     async with app.run_test(size=SIZE) as pilot:
         page = app.query_one(FilesPage)
         await settle(pilot, page, row_count(tree))
         viewer = await open_at(pilot, page, "code.py")
-        page.action_search_viewer()
+        await pilot.press("f2")
         viewer.search_input.value = "line 5 "
         for _ in range(SETTLE):
             await pilot.pause()
@@ -501,13 +553,23 @@ async def test_next_match_walks_the_hits_and_wraps(tree: Path, tmp_path: Path) -
         assert viewer.hits[0] == 5
         assert viewer.hits[1:4] == [50, 51, 52]
         assert viewer.hits[-1] == 59
-        page.action_next_match()
+        await pilot.press("ctrl+g")
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.hits[1] - 1
         for _ in range(len(viewer.hits) - 1):
-            page.action_next_match()
+            await pilot.press("ctrl+g")
         await settle(pilot, page, row_count(tree))
         assert viewer.line_start == viewer.hits[0] - 1
+        # And ``ctrl+f`` is never the find box while a viewer is open: it
+        # opens the Files search bar and rolls that mode, leaving the file
+        # (and its own find box) exactly as they were.
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        assert page.filter_input.display
+
+        assert isinstance(app.focused, Input)
+        assert page.panel("left").search_mode == "recursive"
+        assert page.viewer is viewer
 
 
 @run_async
